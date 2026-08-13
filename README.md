@@ -20,6 +20,11 @@ experiments/  # throwaway projects
 
 See [apps/README.md](apps/README.md) for how to add a new one.
 
+## Learning track
+
+- [notes/00-landscape-2026.md](notes/00-landscape-2026.md) — what MCP, skills, and context engineering actually are
+- [notes/01-curriculum.md](notes/01-curriculum.md) — 6-week plan, ~2–3 hours/week, each week builds something here
+
 ## Notes
 
 - Keep each experiment self-contained in its own directory.
