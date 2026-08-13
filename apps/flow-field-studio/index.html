@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flow Field Studio</title>
+<style>
+  :root {
+    --bg: #05060a;
+    --glass: rgba(18, 20, 32, 0.55);
+    --stroke: rgba(255, 255, 255, 0.12);
+    --text: #e8eaf2;
+    --muted: #8b91a8;
+    --accent: #6ee7ff;
+    --accent-2: #b48cff;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  canvas { display: block; width: 100vw; height: 100vh; }
+
+  /* Ambient glow behind everything */
+  .glow {
+    position: fixed;
+    inset: -20%;
+    pointer-events: none;
+    background:
+      radial-gradient(45vw 45vw at 18% 22%, rgba(110, 231, 255, 0.10), transparent 60%),
+      radial-gradient(40vw 40vw at 82% 78%, rgba(180, 140, 255, 0.10), transparent 60%);
+    z-index: 1;
+  }
+
+  /* ---------- Title ---------- */
+  .brand {
+    position: fixed;
+    left: 28px;
+    bottom: 24px;
+    z-index: 3;
+    pointer-events: none;
+    user-select: none;
+  }
+  .brand h1 {
+    margin: 0;
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    background: linear-gradient(100deg, var(--accent), var(--accent-2) 70%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .brand p {
+    margin: 2px 0 0;
+    color: var(--muted);
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  /* ---------- Control panel ---------- */
+  .panel {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    width: 286px;
+    z-index: 4;
+    padding: 16px;
+    border-radius: 18px;
+    border: 1px solid var(--stroke);
+    background: var(--glass);
+    backdrop-filter: blur(22px) saturate(160%);
+    -webkit-backdrop-filter: blur(22px) saturate(160%);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s;
+  }
+  .panel.collapsed { transform: translateX(calc(100% + 20px)); opacity: 0; }
+
+  .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .panel-head span {
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  .row { margin-bottom: 13px; }
+  .row label {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 6px;
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+  .row label b {
+    color: var(--text);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  input[type=range] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 4px;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid rgba(0, 0, 0, 0.5);
+    cursor: grab;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+    transition: transform 0.15s;
+  }
+  input[type=range]::-webkit-slider-thumb:active { transform: scale(1.25); cursor: grabbing; }
+
+  .palettes { display: flex; gap: 7px; }
+  .sw {
+    flex: 1;
+    height: 26px;
+    border-radius: 8px;
+    border: 1px solid var(--stroke);
+    cursor: pointer;
+    padding: 0;
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .sw:hover { transform: translateY(-2px); }
+  .sw.on { box-shadow: 0 0 0 2px var(--accent); transform: translateY(-2px); }
+
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-top: 14px; }
+  button.act {
+    padding: 9px 8px;
+    border-radius: 10px;
+    border: 1px solid var(--stroke);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s, border-color 0.15s;
+  }
+  button.act:hover { background: rgba(255, 255, 255, 0.11); border-color: rgba(255, 255, 255, 0.25); }
+  button.act:active { transform: scale(0.97); }
+  button.act.wide { grid-column: 1 / -1; }
+  button.act.primary {
+    background: linear-gradient(100deg, rgba(110, 231, 255, 0.22), rgba(180, 140, 255, 0.22));
+    border-color: rgba(110, 231, 255, 0.45);
+  }
+
+  .hint {
+    margin-top: 12px;
+    padding-top: 11px;
+    border-top: 1px solid var(--stroke);
+    color: var(--muted);
+    font-size: 10.5px;
+    line-height: 1.7;
+  }
+  kbd {
+    padding: 1px 5px;
+    border-radius: 4px;
+    border: 1px solid var(--stroke);
+    background: rgba(255, 255, 255, 0.07);
+    font: 10px ui-monospace, "SF Mono", monospace;
+    color: var(--text);
+  }
+
+  /* ---------- HUD ---------- */
+  .hud {
+    position: fixed;
+    top: 22px;
+    left: 24px;
+    z-index: 3;
+    display: flex;
+    gap: 16px;
+    color: var(--muted);
+    font: 11px ui-monospace, "SF Mono", monospace;
+    pointer-events: none;
+  }
+  .hud b { color: var(--text); font-weight: 500; }
+
+  .toggle {
+    position: fixed;
+    top: 20px; right: 20px;
+    z-index: 5;
+    width: 38px; height: 38px;
+    border-radius: 12px;
+    border: 1px solid var(--stroke);
+    background: var(--glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    color: var(--text);
+    font-size: 15px;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s, background 0.15s;
+  }
+  .toggle.show { opacity: 1; pointer-events: auto; }
+  .toggle:hover { background: rgba(255, 255, 255, 0.12); }
+
+  .toast {
+    position: fixed;
+    left: 50%;
+    bottom: 36px;
+    transform: translate(-50%, 20px);
+    z-index: 6;
+    padding: 9px 18px;
+    border-radius: 12px;
+    border: 1px solid var(--stroke);
+    background: var(--glass);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    font-size: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s, transform 0.3s;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+<div class="glow"></div>
+
+<div class="hud">
+  <div><b id="fps">60</b> fps</div>
+  <div><b id="pcount">0</b> particles</div>
+  <div id="state"><b>running</b></div>
+</div>
+
+<div class="brand">
+  <h1>Flow Field Studio</h1>
+  <p>Perlin-driven particle flow</p>
+</div>
+
+<button class="toggle" id="toggle" title="Show controls">☰</button>
+
+<div class="panel" id="panel">
+  <div class="panel-head">
+    <span>Controls</span>
+    <div style="display:flex;align-items:center;gap:10px">
+      <div class="dot"></div>
+      <button class="act" id="hide" style="padding:2px 8px;font-size:11px">hide</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <label>Particles <b id="v-count">1200</b></label>
+    <input type="range" id="s-count" min="100" max="6000" step="100" value="1200">
+  </div>
+  <div class="row">
+    <label>Speed <b id="v-speed">1.4</b></label>
+    <input type="range" id="s-speed" min="0.2" max="6" step="0.1" value="1.4">
+  </div>
+  <div class="row">
+    <label>Field scale <b id="v-scale">1.8</b></label>
+    <input type="range" id="s-scale" min="0.3" max="6" step="0.1" value="1.8">
+  </div>
+  <div class="row">
+    <label>Curl <b id="v-curl">2.0</b></label>
+    <input type="range" id="s-curl" min="0.5" max="6" step="0.1" value="2">
+  </div>
+  <div class="row">
+    <label>Trail length <b id="v-trail">0.96</b></label>
+    <input type="range" id="s-trail" min="0.70" max="0.995" step="0.005" value="0.96">
+  </div>
+  <div class="row">
+    <label>Line weight <b id="v-width">1.1</b></label>
+    <input type="range" id="s-width" min="0.3" max="4" step="0.1" value="1.1">
+  </div>
+  <div class="row">
+    <label>Drift <b id="v-drift">0.30</b></label>
+    <input type="range" id="s-drift" min="0" max="2" step="0.05" value="0.3">
+  </div>
+
+  <div class="row">
+    <label>Palette</label>
+    <div class="palettes" id="palettes"></div>
+  </div>
+
+  <div class="btns">
+    <button class="act primary" id="shuffle">Randomize</button>
+    <button class="act" id="clear">Clear</button>
+    <button class="act" id="pause">Pause</button>
+    <button class="act" id="save">Save PNG</button>
+  </div>
+
+  <div class="hint">
+    <kbd>space</kbd> pause &nbsp; <kbd>R</kbd> randomize &nbsp; <kbd>C</kbd> clear<br>
+    <kbd>S</kbd> save &nbsp; <kbd>H</kbd> hide panel &nbsp; drag to push particles
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ---------------- Perlin noise (classic 3D, improved) ---------------- */
+  const perm = new Uint8Array(512);
+  function seedNoise() {
+    const p = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) p[i] = i;
+    for (let i = 255; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      [p[i], p[j]] = [p[j], p[i]];
+    }
+    for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+  }
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+  const lerp = (a, b, t) => a + t * (b - a);
+  function grad(h, x, y, z) {
+    switch (h & 15) {
+      case 0: return x + y;   case 1: return -x + y;  case 2: return x - y;   case 3: return -x - y;
+      case 4: return x + z;   case 5: return -x + z;  case 6: return x - z;   case 7: return -x - z;
+      case 8: return y + z;   case 9: return -y + z;  case 10: return y - z;  case 11: return -y - z;
+      case 12: return x + y;  case 13: return -y + z; case 14: return -x + y; default: return -y - z;
+    }
+  }
+  function noise3(x, y, z) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255, Z = Math.floor(z) & 255;
+    x -= Math.floor(x); y -= Math.floor(y); z -= Math.floor(z);
+    const u = fade(x), v = fade(y), w = fade(z);
+    const A = perm[X] + Y, AA = perm[A] + Z, AB = perm[A + 1] + Z;
+    const B = perm[X + 1] + Y, BA = perm[B] + Z, BB = perm[B + 1] + Z;
+    return lerp(
+      lerp(lerp(grad(perm[AA], x, y, z),         grad(perm[BA], x - 1, y, z), u),
+           lerp(grad(perm[AB], x, y - 1, z),     grad(perm[BB], x - 1, y - 1, z), u), v),
+      lerp(lerp(grad(perm[AA + 1], x, y, z - 1), grad(perm[BA + 1], x - 1, y, z - 1), u),
+           lerp(grad(perm[AB + 1], x, y - 1, z - 1), grad(perm[BB + 1], x - 1, y - 1, z - 1), u), v),
+      w);
+  }
+  seedNoise();
+
+  /* ---------------- Palettes ---------------- */
+  const PALETTES = [
+    { name: 'Aurora', colors: ['#6ee7ff', '#5eead4', '#a78bfa', '#f0abfc'] },
+    { name: 'Ember',  colors: ['#fca311', '#f4511e', '#e11d48', '#fde68a'] },
+    { name: 'Neon',   colors: ['#22d3ee', '#a3e635', '#f472b6', '#facc15'] },
+    { name: 'Deep',   colors: ['#1e3a8a', '#3b82f6', '#93c5fd', '#c7d2fe'] },
+    { name: 'Mono',   colors: ['#ffffff', '#c9cbd6', '#8b91a8', '#5b6178'] },
+  ];
+  let palette = 0;
+
+  const hexToRgb = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+  const RGB = PALETTES.map(p => p.colors.map(hexToRgb));
+
+  // Sample the active palette as a smooth gradient at t in [0,1].
+  function sample(t, alpha) {
+    const c = RGB[palette];
+    const f = Math.min(0.9999, Math.max(0, t)) * (c.length - 1);
+    const i = f | 0, k = f - i;
+    const a = c[i], b = c[i + 1] || c[i];
+    return `rgba(${(a[0] + (b[0] - a[0]) * k) | 0},${(a[1] + (b[1] - a[1]) * k) | 0},${(a[2] + (b[2] - a[2]) * k) | 0},${alpha})`;
+  }
+
+  /* ---------------- Config ---------------- */
+  const cfg = { count: 1200, speed: 1.4, scale: 1.8, curl: 2, trail: 0.96, width: 1.1, drift: 0.3 };
+
+  /* ---------------- Canvas ---------------- */
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  let W = 0, H = 0, dpr = 1;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W * dpr);
+    canvas.height = Math.floor(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = '#05060a';
+    ctx.fillRect(0, 0, W, H);
+    ctx.lineCap = 'round';
+  }
+
+  /* ---------------- Particles ---------------- */
+  let parts = [];
+  function spawn(p) {
+    p.x = Math.random() * W;
+    p.y = Math.random() * H;
+    p.px = p.x;
+    p.py = p.y;
+    p.life = 60 + Math.random() * 220;
+    p.hue = Math.random();          // position along the palette gradient
+    return p;
+  }
+  function setCount(n) {
+    while (parts.length < n) parts.push(spawn({}));
+    if (parts.length > n) parts.length = n;
+    ui.pcount.textContent = parts.length;
+  }
+
+  /* ---------------- Pointer ---------------- */
+  const pointer = { x: -1e4, y: -1e4, down: false };
+  canvas.addEventListener('pointerdown', e => { pointer.down = true; pointer.x = e.clientX; pointer.y = e.clientY; });
+  canvas.addEventListener('pointermove', e => { pointer.x = e.clientX; pointer.y = e.clientY; });
+  window.addEventListener('pointerup', () => { pointer.down = false; });
+
+  /* ---------------- Loop ---------------- */
+  let t = 0, running = true, frames = 0, fpsAt = performance.now();
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    if (!running) { fpsAt = now; frames = 0; return; }
+
+    // Fade previous frame to leave trails.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `rgba(5, 6, 10, ${1 - cfg.trail})`;
+    ctx.fillRect(0, 0, W, H);
+
+    // Additive blending makes overlapping strokes bloom.
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineWidth = cfg.width;
+
+    const s = cfg.scale / 1000;
+    t += 0.0016 * cfg.drift;
+
+    for (const p of parts) {
+      const n = noise3(p.x * s, p.y * s, t);
+      const angle = n * Math.PI * cfg.curl;
+
+      p.px = p.x;
+      p.py = p.y;
+      p.x += Math.cos(angle) * cfg.speed;
+      p.y += Math.sin(angle) * cfg.speed;
+
+      // Pointer pushes particles outward while held.
+      if (pointer.down) {
+        const dx = p.x - pointer.x, dy = p.y - pointer.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < 26000 && d2 > 1) {
+          const f = (1 - d2 / 26000) * 3.2 / Math.sqrt(d2);
+          p.x += dx * f;
+          p.y += dy * f;
+        }
+      }
+
+      ctx.strokeStyle = sample(p.hue, 0.55);
+      ctx.beginPath();
+      ctx.moveTo(p.px, p.py);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+
+      // Respawn when it dies or wanders off-screen (skip the connecting streak).
+      if (--p.life <= 0 || p.x < -40 || p.x > W + 40 || p.y < -40 || p.y > H + 40) spawn(p);
+    }
+
+    frames++;
+    if (now - fpsAt >= 500) {
+      ui.fps.textContent = Math.round((frames * 1000) / (now - fpsAt));
+      frames = 0;
+      fpsAt = now;
+    }
+  }
+
+  /* ---------------- UI wiring ---------------- */
+  const ui = {};
+  ['fps', 'pcount', 'state', 'panel', 'toggle', 'toast'].forEach(id => ui[id] = document.getElementById(id));
+
+  let toastTimer;
+  function toast(msg) {
+    ui.toast.textContent = msg;
+    ui.toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => ui.toast.classList.remove('show'), 1600);
+  }
+
+  // Slider -> config binding. `fmt` controls the readout precision.
+  const bind = (key, fmt, after) => {
+    const slider = document.getElementById('s-' + key);
+    const out = document.getElementById('v-' + key);
+    const apply = () => {
+      cfg[key] = parseFloat(slider.value);
+      out.textContent = fmt(cfg[key]);
+      if (after) after(cfg[key]);
+    };
+    slider.addEventListener('input', apply);
+    apply();
+    return slider;
+  };
+
+  const sliders = {
+    count: bind('count', v => v, v => setCount(v)),
+    speed: bind('speed', v => v.toFixed(1)),
+    scale: bind('scale', v => v.toFixed(1)),
+    curl:  bind('curl',  v => v.toFixed(1)),
+    trail: bind('trail', v => v.toFixed(3)),
+    width: bind('width', v => v.toFixed(1)),
+    drift: bind('drift', v => v.toFixed(2)),
+  };
+
+  // Palette swatches
+  const swWrap = document.getElementById('palettes');
+  PALETTES.forEach((p, i) => {
+    const b = document.createElement('button');
+    b.className = 'sw' + (i === palette ? ' on' : '');
+    b.title = p.name;
+    b.style.background = `linear-gradient(135deg, ${p.colors.join(', ')})`;
+    b.addEventListener('click', () => {
+      palette = i;
+      [...swWrap.children].forEach((el, j) => el.classList.toggle('on', j === i));
+      toast(p.name);
+    });
+    swWrap.appendChild(b);
+  });
+
+  function clear() {
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = '#05060a';
+    ctx.fillRect(0, 0, W, H);
+    parts.forEach(spawn);
+  }
+
+  function randomize() {
+    const rnd = (a, b) => a + Math.random() * (b - a);
+    const set = (k, v) => { sliders[k].value = v; sliders[k].dispatchEvent(new Event('input')); };
+    seedNoise();
+    set('speed', rnd(0.6, 3.2).toFixed(1));
+    set('scale', rnd(0.6, 4.5).toFixed(1));
+    set('curl',  rnd(1, 5).toFixed(1));
+    set('trail', rnd(0.9, 0.99).toFixed(3));
+    set('width', rnd(0.5, 2.2).toFixed(1));
+    set('drift', rnd(0.05, 1.2).toFixed(2));
+    palette = (Math.random() * PALETTES.length) | 0;
+    [...swWrap.children].forEach((el, j) => el.classList.toggle('on', j === palette));
+    clear();
+    toast('New field · ' + PALETTES[palette].name);
+  }
+
+  function togglePause() {
+    running = !running;
+    document.getElementById('pause').textContent = running ? 'Pause' : 'Resume';
+    ui.state.innerHTML = `<b>${running ? 'running' : 'paused'}</b>`;
+  }
+
+  function save() {
+    const a = document.createElement('a');
+    a.download = `flow-field-${Date.now()}.png`;
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+    toast('Saved PNG');
+  }
+
+  function setPanel(open) {
+    ui.panel.classList.toggle('collapsed', !open);
+    ui.toggle.classList.toggle('show', !open);
+  }
+
+  document.getElementById('shuffle').addEventListener('click', randomize);
+  document.getElementById('clear').addEventListener('click', () => { clear(); toast('Cleared'); });
+  document.getElementById('pause').addEventListener('click', togglePause);
+  document.getElementById('save').addEventListener('click', save);
+  document.getElementById('hide').addEventListener('click', () => setPanel(false));
+  ui.toggle.addEventListener('click', () => setPanel(true));
+
+  window.addEventListener('keydown', e => {
+    if (e.target.tagName === 'INPUT') return;
+    const k = e.key.toLowerCase();
+    if (k === ' ') { e.preventDefault(); togglePause(); }
+    else if (k === 'r') randomize();
+    else if (k === 'c') { clear(); toast('Cleared'); }
+    else if (k === 's') save();
+    else if (k === 'h') setPanel(ui.panel.classList.contains('collapsed'));
+  });
+
+  let resizeTimer;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { resize(); clear(); }, 120);
+  });
+
+  resize();
+  setCount(cfg.count);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
