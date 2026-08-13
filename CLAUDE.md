@@ -29,6 +29,11 @@ first. One topic per file, and `notes/README.md` is the index; keep it current.
   the difference.
 - Branch names are bare and descriptive — `add-claude-md`, not
   `andyli86/add-claude-md`.
+- **This repo is under my personal GitHub account (`andymaker156`), but `gh` is
+  usually active as my work account (`andyli86`).** Run
+  `gh auth switch --user andymaker156` before any `gh` command here, and switch
+  back afterwards. Without it, `gh` fails with "Could not resolve to a
+  Repository" — `git push` still works, since that uses separate credentials.
 - Ask before adding a third-party MCP server. They run with my credentials, so
   the bar is "I read the source", not "it looked useful".
 - Never commit secrets, API keys, or `.env` files.
