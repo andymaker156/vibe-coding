@@ -1,4 +1,4 @@
-# ai-coding-hub
+# vibe-coding
 
 Personal hub for learning AI-assisted coding — notes, prompts, agent skills, and experiments.
 
