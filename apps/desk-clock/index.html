@@ -1,0 +1,215 @@
+<!-- new-app -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desk Clock</title>
+<style>
+  :root {
+    --paper: #f4efe4;
+    --paper-edge: #e6dfd0;
+    --ink: #2c2a26;
+    --ink-soft: #8c8578;
+    --brass: #b0762c;
+    --red: #c0442f;
+    --face: #fbf8f1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: grid;
+    place-items: center;
+    padding: 32px;
+    background:
+      radial-gradient(70vw 70vw at 50% -10%, #fffdf7, transparent 70%),
+      var(--paper);
+    color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .clock {
+    width: min(88vw, 88vh, 460px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 26px;
+  }
+
+  .face-wrap {
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    padding: 14px;
+    background: linear-gradient(160deg, #fffefa, var(--paper-edge));
+    box-shadow:
+      0 1px 0 #fff inset,
+      0 22px 44px -18px rgba(60, 48, 28, 0.45),
+      0 2px 6px rgba(60, 48, 28, 0.12);
+  }
+  svg { display: block; width: 100%; height: 100%; }
+
+  .tick-h { stroke: var(--ink); stroke-width: 2.1; stroke-linecap: round; }
+  .tick-m { stroke: var(--ink-soft); stroke-width: 0.9; stroke-linecap: round; }
+  .numeral {
+    fill: var(--ink);
+    font: 600 8.5px ui-sans-serif, -apple-system, "Helvetica Neue", sans-serif;
+    text-anchor: middle;
+    dominant-baseline: central;
+    letter-spacing: -0.02em;
+  }
+  .hand { stroke-linecap: round; transform-box: view-box; transform-origin: 50px 50px; }
+  #hour  { stroke: var(--ink); stroke-width: 4.4; }
+  #min   { stroke: var(--ink); stroke-width: 2.8; }
+  #sec   { stroke: var(--red); stroke-width: 1.1; }
+  .brand {
+    fill: var(--ink-soft);
+    font: 500 3.4px ui-monospace, "SF Mono", monospace;
+    text-anchor: middle;
+    letter-spacing: 0.22em;
+  }
+
+  .readout { text-align: center; }
+  .digits {
+    font: 300 clamp(30px, 9vw, 46px)/1 ui-monospace, "SF Mono", "Menlo", monospace;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .digits .sec { color: var(--ink-soft); }
+  .digits .suffix {
+    font-size: 0.4em;
+    letter-spacing: 0.14em;
+    color: var(--brass);
+    margin-left: 0.35em;
+  }
+  .date {
+    margin-top: 10px;
+    font: 500 11.5px ui-sans-serif, -apple-system, sans-serif;
+    text-transform: uppercase;
+    letter-spacing: 0.19em;
+    color: var(--ink-soft);
+  }
+
+  button {
+    margin-top: 4px;
+    padding: 7px 16px;
+    border-radius: 999px;
+    border: 1px solid rgba(44, 42, 38, 0.18);
+    background: rgba(255, 255, 255, 0.6);
+    color: var(--ink-soft);
+    font: 10px ui-monospace, "SF Mono", monospace;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    transition: color 0.18s, border-color 0.18s, background 0.18s;
+  }
+  button:hover { color: var(--ink); border-color: var(--brass); background: #fff; }
+  button:focus-visible { outline: 2px solid var(--brass); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<div class="clock">
+  <div class="face-wrap">
+    <svg viewBox="0 0 100 100" role="img" aria-label="Analog clock face">
+      <circle cx="50" cy="50" r="49" fill="var(--face)" stroke="rgba(44,42,38,0.10)" stroke-width="0.6"></circle>
+      <g id="ticks"></g>
+      <g id="numerals"></g>
+      <text class="brand" x="50" y="68">DESK CLOCK</text>
+      <line id="hour" x1="50" y1="50" x2="50" y2="27" class="hand"></line>
+      <line id="min"  x1="50" y1="50" x2="50" y2="16" class="hand"></line>
+      <line id="sec"  x1="50" y1="56" x2="50" y2="14" class="hand"></line>
+      <circle cx="50" cy="50" r="2.1" fill="var(--ink)"></circle>
+      <circle cx="50" cy="50" r="0.8" fill="var(--face)"></circle>
+    </svg>
+  </div>
+
+  <div class="readout">
+    <div class="digits" id="digits" aria-live="off">--:--<span class="sec">:--</span></div>
+    <div class="date" id="date">&nbsp;</div>
+    <button id="fmt" type="button">24-HOUR</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  var NS = "http://www.w3.org/2000/svg";
+  var ticks = document.getElementById("ticks");
+  var numerals = document.getElementById("numerals");
+
+  // Minute ticks, with every fifth drawn long as an hour marker.
+  for (var i = 0; i < 60; i++) {
+    var onHour = i % 5 === 0;
+    var a = (i / 60) * Math.PI * 2;
+    var outer = 45, inner = onHour ? 39.5 : 43;
+    var line = document.createElementNS(NS, "line");
+    line.setAttribute("x1", (50 + Math.sin(a) * inner).toFixed(2));
+    line.setAttribute("y1", (50 - Math.cos(a) * inner).toFixed(2));
+    line.setAttribute("x2", (50 + Math.sin(a) * outer).toFixed(2));
+    line.setAttribute("y2", (50 - Math.cos(a) * outer).toFixed(2));
+    line.setAttribute("class", onHour ? "tick-h" : "tick-m");
+    ticks.appendChild(line);
+  }
+
+  for (var h = 1; h <= 12; h++) {
+    var ha = (h / 12) * Math.PI * 2;
+    var t = document.createElementNS(NS, "text");
+    t.setAttribute("x", (50 + Math.sin(ha) * 32).toFixed(2));
+    t.setAttribute("y", (50 - Math.cos(ha) * 32).toFixed(2));
+    t.setAttribute("class", "numeral");
+    t.textContent = h;
+    numerals.appendChild(t);
+  }
+
+  var hour = document.getElementById("hour");
+  var min = document.getElementById("min");
+  var sec = document.getElementById("sec");
+  var digits = document.getElementById("digits");
+  var dateEl = document.getElementById("date");
+  var fmtBtn = document.getElementById("fmt");
+
+  var use24 = false;
+  fmtBtn.addEventListener("click", function () {
+    use24 = !use24;
+    fmtBtn.textContent = use24 ? "12-HOUR" : "24-HOUR";
+    render(new Date());
+  });
+
+  function pad(n) { return n < 10 ? "0" + n : "" + n; }
+
+  var DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  var MONTHS = ["January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"];
+
+  function render(now) {
+    var ms = now.getMilliseconds();
+    var s = now.getSeconds() + ms / 1000;
+    var m = now.getMinutes() + s / 60;
+    var h = (now.getHours() % 12) + m / 60;
+
+    // Hands sweep continuously rather than stepping.
+    sec.setAttribute("transform", "rotate(" + (s * 6).toFixed(3) + ")");
+    min.setAttribute("transform", "rotate(" + (m * 6).toFixed(3) + ")");
+    hour.setAttribute("transform", "rotate(" + (h * 30).toFixed(3) + ")");
+
+    var hh = now.getHours();
+    var suffix = "";
+    if (!use24) {
+      suffix = '<span class="suffix">' + (hh < 12 ? "AM" : "PM") + "</span>";
+      hh = hh % 12 || 12;
+    }
+    digits.innerHTML = (use24 ? pad(hh) : hh) + ":" + pad(now.getMinutes()) +
+      '<span class="sec">:' + pad(now.getSeconds()) + "</span>" + suffix;
+
+    dateEl.textContent = DAYS[now.getDay()] + " · " +
+      MONTHS[now.getMonth()] + " " + now.getDate() + ", " + now.getFullYear();
+  }
+
+  (function tick() {
+    render(new Date());
+    requestAnimationFrame(tick);
+  })();
+})();
+</script>
+</body>
+</html>

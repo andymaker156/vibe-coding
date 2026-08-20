@@ -1,0 +1,267 @@
+<!-- new-app -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Countdown Timer</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1c1f25;
+    --line: #2c313a;
+    --text: #f2f4f7;
+    --muted: #7d8595;
+    --lime: #c6f24e;
+    --amber: #ffb020;
+    --track: #272b33;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    display: grid;
+    place-items: center;
+    padding: 28px;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .timer {
+    width: min(92vw, 380px);
+    padding: 30px 26px 26px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    text-align: center;
+  }
+
+  .dial { position: relative; width: min(66vw, 240px); margin: 0 auto 22px; }
+  .dial svg { display: block; width: 100%; transform: rotate(-90deg); }
+  .track { fill: none; stroke: var(--track); stroke-width: 6; }
+  .arc {
+    fill: none;
+    stroke: var(--lime);
+    stroke-width: 6;
+    stroke-linecap: butt;
+    transition: stroke 0.25s;
+  }
+
+  .digits {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    font: 250 clamp(38px, 15vw, 54px)/1 ui-monospace, "SF Mono", "Menlo", monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+
+  .presets { display: flex; gap: 6px; justify-content: center; margin-bottom: 16px; }
+  .controls { display: flex; gap: 8px; }
+
+  button {
+    flex: 1;
+    padding: 10px 0;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    font: 500 11px ui-monospace, "SF Mono", monospace;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  button:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
+  button:disabled { opacity: 0.35; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+  .presets button { padding: 7px 0; font-size: 10.5px; }
+  .presets button[aria-pressed="true"] {
+    color: var(--bg);
+    background: var(--lime);
+    border-color: var(--lime);
+  }
+  #go { color: var(--bg); background: var(--lime); border-color: var(--lime); font-weight: 600; }
+  #go:hover:not(:disabled) { background: #d4ff5e; border-color: #d4ff5e; color: var(--bg); }
+
+  .hint {
+    margin: 14px 0 0;
+    color: var(--muted);
+    font: 10px ui-monospace, "SF Mono", monospace;
+    letter-spacing: 0.08em;
+  }
+
+  /* Finished: everything goes amber and the dial pulses. */
+  .timer.done .arc { stroke: var(--amber); }
+  .timer.done .digits { color: var(--amber); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) {
+    .timer.done .digits { animation: none; }
+  }
+</style>
+</head>
+<body>
+<div class="timer" id="timer">
+  <div class="dial">
+    <svg viewBox="0 0 120 120" aria-hidden="true">
+      <circle class="track" cx="60" cy="60" r="52"></circle>
+      <circle class="arc" id="arc" cx="60" cy="60" r="52"></circle>
+    </svg>
+    <div class="digits" id="digits" role="timer" aria-live="off">05:00</div>
+  </div>
+
+  <div class="presets" id="presets">
+    <button type="button" data-min="1">1 MIN</button>
+    <button type="button" data-min="3">3 MIN</button>
+    <button type="button" data-min="5" aria-pressed="true">5 MIN</button>
+    <button type="button" data-min="10">10 MIN</button>
+  </div>
+
+  <div class="controls">
+    <button type="button" id="go">START</button>
+    <button type="button" id="reset" disabled>RESET</button>
+  </div>
+
+  <p class="hint">SPACE start/pause · R reset</p>
+</div>
+
+<script>
+(function () {
+  var CIRC = 2 * Math.PI * 52;
+
+  var timer = document.getElementById("timer");
+  var arc = document.getElementById("arc");
+  var digits = document.getElementById("digits");
+  var presets = document.getElementById("presets");
+  var go = document.getElementById("go");
+  var resetBtn = document.getElementById("reset");
+
+  arc.setAttribute("stroke-dasharray", CIRC.toFixed(2));
+
+  var duration = 5 * 60 * 1000;  // selected preset length
+  var remaining = duration;      // ms left when paused
+  var endAt = 0;                 // wall-clock deadline while running
+  var running = false;
+  var frame = null;
+  var audioCtx = null;
+
+  function left() {
+    return running ? Math.max(0, endAt - Date.now()) : remaining;
+  }
+
+  function paint() {
+    var ms = left();
+    var total = Math.ceil(ms / 1000);
+    var mm = Math.floor(total / 60);
+    var ss = total % 60;
+    digits.textContent = (mm < 10 ? "0" + mm : mm) + ":" + (ss < 10 ? "0" + ss : ss);
+
+    var frac = duration > 0 ? ms / duration : 0;
+    arc.setAttribute("stroke-dashoffset", (CIRC * (1 - frac)).toFixed(2));
+    document.title = (ms > 0 ? digits.textContent + " · " : "Done · ") + "Countdown Timer";
+  }
+
+  // Short two-note chime. Built on demand so the AudioContext is created
+  // inside a user gesture, which browsers require.
+  function chime() {
+    try {
+      if (!audioCtx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        audioCtx = new AC();
+      }
+      [0, 0.18].forEach(function (delay, i) {
+        var osc = audioCtx.createOscillator();
+        var gain = audioCtx.createGain();
+        var t = audioCtx.currentTime + delay;
+        osc.type = "sine";
+        osc.frequency.value = i === 0 ? 880 : 1174;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.22, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.32);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t);
+        osc.stop(t + 0.35);
+      });
+    } catch (e) {
+      // Audio is a nicety; a blocked context must not break the countdown.
+    }
+  }
+
+  function loop() {
+    paint();
+    if (left() <= 0) {
+      running = false;
+      remaining = 0;
+      frame = null;
+      timer.classList.add("done");
+      go.textContent = "START";
+      go.disabled = true;
+      chime();
+      return;
+    }
+    frame = requestAnimationFrame(loop);
+  }
+
+  function start() {
+    if (running || remaining <= 0) return;
+    endAt = Date.now() + remaining;
+    running = true;
+    go.textContent = "PAUSE";
+    resetBtn.disabled = false;
+    frame = requestAnimationFrame(loop);
+  }
+
+  function pause() {
+    if (!running) return;
+    remaining = left();
+    running = false;
+    if (frame) cancelAnimationFrame(frame);
+    frame = null;
+    go.textContent = "START";
+    paint();
+  }
+
+  function reset() {
+    if (frame) cancelAnimationFrame(frame);
+    frame = null;
+    running = false;
+    remaining = duration;
+    timer.classList.remove("done");
+    go.textContent = "START";
+    go.disabled = false;
+    resetBtn.disabled = true;
+    paint();
+  }
+
+  go.addEventListener("click", function () {
+    running ? pause() : start();
+  });
+  resetBtn.addEventListener("click", reset);
+
+  presets.addEventListener("click", function (e) {
+    var btn = e.target.closest("button[data-min]");
+    if (!btn) return;
+    Array.prototype.forEach.call(presets.children, function (b) {
+      b.setAttribute("aria-pressed", b === btn ? "true" : "false");
+    });
+    duration = Number(btn.dataset.min) * 60 * 1000;
+    reset();
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === " " || e.code === "Space") {
+      e.preventDefault();
+      if (!go.disabled) running ? pause() : start();
+    } else if (e.key === "r" || e.key === "R") {
+      reset();
+    }
+  });
+
+  paint();
+})();
+</script>
+</body>
+</html>
