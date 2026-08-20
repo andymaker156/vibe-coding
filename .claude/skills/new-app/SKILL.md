@@ -18,6 +18,9 @@ URL, so it's hard to change later.
 
 One file. The constraints in CLAUDE.md apply — don't restate them, follow them.
 
+Make `<!-- new-app -->` the very first line of the file, above the `<title>`.
+It marks the file as scaffolded through this skill.
+
 Structure that has worked: `<title>` first, then a single `<style>` block using
 CSS custom properties for the palette, then markup, then one `<script>` block
 wrapped in an IIFE. Give the app a real visual identity rather than defaulting
