@@ -8,6 +8,16 @@ quietly broke something else.
 then check the expectations. A fresh session matters — a session that has been
 discussing the thing under test will pass regardless.
 
+**Run them on a throwaway branch.** E1, E3, and E4 each create an app and E5
+creates a branch, so a full pass leaves clutter behind:
+
+```sh
+git switch -c eval-run-$(date +%m%d)
+# ...run the cases...
+git switch - && git branch -D eval-run-$(date +%m%d)
+git clean -fd apps/    # remove the scratch apps
+```
+
 **Record the result** in the log at the bottom. An eval you don't record is
 just a vibe.
 
@@ -98,3 +108,4 @@ everything passes is still worth a line — it dates the last known-good state.
 | Date | What changed | E1 | E2 | E3 | E4 | E5 | Notes |
 |---|---|---|---|---|---|---|---|
 | 2026-08-13 | Added canary to `new-app` skill | pass | — | — | — | — | Verified via `desk-clock` and `countdown-timer`; canary present in both, absent in hand-written `flow-field-studio` |
+| 2026-08-13 | Baseline — first full run of all five | pass | pass | pass | pass | pass | Clean baseline. E3 also passes a static audit: no lockfiles, CDN tags, `type="module"`, or local `fetch()` anywhere under `apps/` |
