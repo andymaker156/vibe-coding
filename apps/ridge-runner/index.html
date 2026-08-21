@@ -1,0 +1,521 @@
+<!-- new-app -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ridge Runner</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page:   #14101c;
+    --ink:    #fdf6e8;
+    --ink-2:  #b9a9c9;
+    --muted:  #7d6f8d;
+    --amber:  #ffb454;
+    --rule:   #2a2136;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, "Cascadia Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 13px/1.5 var(--mono);
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px;
+    padding: 24px 16px 40px;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .bar {
+    width: 100%; max-width: 900px;
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  h1 {
+    margin: 0; font: 600 15px/1.2 var(--mono);
+    letter-spacing: 0.14em; text-transform: uppercase;
+  }
+  .bar .hint { color: var(--muted); font-size: 11.5px; flex: 1 1 200px; }
+  .scores { display: flex; gap: 18px; font-size: 12px; letter-spacing: 0.06em; }
+  .scores b { color: var(--amber); font-weight: 600; }
+  .scores span { color: var(--muted); }
+
+  .stage {
+    position: relative; width: 100%; max-width: 900px;
+    border: 1px solid var(--rule); border-radius: 14px; overflow: hidden;
+    background: #0f0b16;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  }
+  canvas { display: block; width: 100%; height: auto; touch-action: manipulation; }
+
+  .overlay {
+    position: absolute; inset: 0;
+    display: grid; place-content: center; gap: 8px; text-align: center;
+    background: rgba(15, 11, 22, 0.82);
+    backdrop-filter: blur(2px);
+    padding: 20px;
+  }
+  .overlay[hidden] { display: none; }
+  .overlay .big {
+    font: 600 22px/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .overlay .sub { color: var(--ink-2); font-size: 12.5px; }
+  .overlay .keys { color: var(--muted); font-size: 11.5px; margin-top: 4px; }
+  kbd {
+    display: inline-block; padding: 1px 6px; border-radius: 5px;
+    border: 1px solid var(--rule); background: #1b1526; color: var(--ink-2);
+    font: 11px var(--mono);
+  }
+  .best { color: var(--amber); }
+  footer { color: var(--muted); font-size: 11.5px; max-width: 900px; width: 100%; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <h1>Ridge Runner</h1>
+    <div class="hint">Jump the rocks, duck the drones. It only gets faster.</div>
+    <div class="scores">
+      <div><span>score</span> <b id="score">0</b></div>
+      <div><span>best</span> <b id="best">0</b></div>
+    </div>
+  </div>
+
+  <div class="stage">
+    <canvas id="c" width="900" height="300" aria-label="Ridge Runner game"></canvas>
+    <div class="overlay" id="overlay">
+      <div class="big" id="ovTitle">Ridge Runner</div>
+      <div class="sub" id="ovSub">Endless run along the ridge.</div>
+      <div class="keys">
+        <kbd>space</kbd> jump · <kbd>↓</kbd> duck · hold jump for height · tap to play on touch
+      </div>
+    </div>
+  </div>
+
+  <footer id="foot">One file, no dependencies. Best score is kept in this browser only.</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const VIEW = { w: 900, h: 300 };
+  const GROUND = VIEW.h - 54;         // y of the ridge line
+  const GRAVITY = 2600;
+  const JUMP_V = -830;
+  const CUT = 0.42;                   // velocity kept when jump is released early
+  const SPEED_0 = 330, SPEED_MAX = 940;
+  const DUCK_H = 22, STAND_H = 40, BODY_W = 34;
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const $ = (id) => document.getElementById(id);
+
+  // localStorage is unavailable on some file:// origins -- degrade, never throw.
+  const store = (() => {
+    try {
+      const k = "ridge-runner.best";
+      localStorage.setItem(k, localStorage.getItem(k) || "0");
+      return { get: () => +localStorage.getItem(k) || 0, set: (v) => localStorage.setItem(k, String(v)) };
+    } catch (_) {
+      let mem = 0;
+      return { get: () => mem, set: (v) => { mem = v; }, volatile: true };
+    }
+  })();
+
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  const state = {
+    mode: "title",            // title | run | over
+    t: 0, score: 0, best: store.get(), speed: SPEED_0,
+    player: { y: 0, vy: 0, ducking: false, onGround: true, legT: 0 },
+    obstacles: [], hills: [], stars: [], grit: [],
+    nextSpawn: 240, held: false, flash: 0
+  };
+
+  function seedScenery() {
+    state.hills = Array.from({ length: 18 }, (_, i) => ({
+      x: i * 120 + rand(-30, 30), h: rand(26, 96), w: rand(120, 260), depth: pick([0.25, 0.45])
+    }));
+    state.stars = Array.from({ length: 70 }, () => ({
+      x: Math.random() * VIEW.w, y: Math.random() * (GROUND - 90), r: rand(0.5, 1.5), tw: Math.random() * 6
+    }));
+    state.grit = Array.from({ length: 60 }, () => ({
+      x: Math.random() * VIEW.w, y: GROUND + rand(6, 44), w: rand(4, 16)
+    }));
+  }
+
+  function reset() {
+    state.score = 0; state.speed = SPEED_0; state.obstacles = [];
+    state.nextSpawn = 260; state.flash = 0;
+    Object.assign(state.player, { y: 0, vy: 0, ducking: false, onGround: true, legT: 0 });
+  }
+
+  // --- obstacles -------------------------------------------------------------
+  const KINDS = {
+    rock:   () => ({ kind: "rock",   w: rand(18, 30), h: rand(26, 42), yOff: 0 }),
+    cluster:() => ({ kind: "cluster",w: rand(40, 62), h: rand(24, 34), yOff: 0 }),
+    pillar: () => ({ kind: "pillar", w: rand(16, 22), h: rand(52, 66), yOff: 0 }),
+    // yOff must sit inside the standing player's 40px box, or a drone is
+    // scenery you can walk straight through. Ducking (22px) slips under both.
+    drone:  () => ({ kind: "drone",  w: 40, h: 20, yOff: pick([26, 32]) })
+  };
+
+  function spawn() {
+    const roll = Math.random();
+    const kind = state.score < 140 ? (roll < 0.72 ? "rock" : "cluster")
+      : roll < 0.42 ? "rock" : roll < 0.62 ? "cluster" : roll < 0.8 ? "pillar" : "drone";
+    const o = KINDS[kind]();
+    o.x = VIEW.w + 40;
+    state.obstacles.push(o);
+    // Gap scales with speed so the next obstacle is always reactable.
+    const reach = state.speed * rand(0.62, 1.05);
+    state.nextSpawn = Math.max(150, reach);
+  }
+
+  function boxOf(o) {
+    return { x: o.x, y: GROUND - o.yOff - o.h, w: o.w, h: o.h };
+  }
+  function playerBox(p) {
+    const h = p.ducking && p.onGround ? DUCK_H : STAND_H;
+    return { x: 92 + 4, y: GROUND - p.y - h, w: BODY_W - 8, h: h };
+  }
+  function hits(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+  }
+
+  // --- simulation ------------------------------------------------------------
+  function step(dt) {
+    state.t += dt;
+    if (state.mode !== "run") return;
+
+    state.speed = Math.min(SPEED_MAX, SPEED_0 + state.score * 0.55);
+    const dx = state.speed * dt;
+
+    // y is height above the ridge; vy is px/s with down positive, so rising
+    // (vy < 0) increases y.
+    const p = state.player;
+    p.vy += GRAVITY * dt;
+    p.y -= p.vy * dt;
+    if (p.y <= 0) { p.y = 0; p.vy = 0; p.onGround = true; } else { p.onGround = false; }
+    p.legT += dx * 0.05;
+
+    // scenery scroll
+    for (const h of state.hills) {
+      h.x -= dx * h.depth;
+      if (h.x + h.w < -40) { h.x += 120 * state.hills.length; h.h = rand(26, 96); }
+    }
+    for (const g of state.grit) {
+      g.x -= dx;
+      if (g.x + g.w < 0) { g.x += VIEW.w + rand(0, 120); g.y = GROUND + rand(6, 44); }
+    }
+
+    // obstacles
+    state.nextSpawn -= dx;
+    if (state.nextSpawn <= 0) spawn();
+    for (const o of state.obstacles) o.x -= dx;
+    state.obstacles = state.obstacles.filter((o) => o.x + o.w > -20);
+
+    const pb = playerBox(p);
+    for (const o of state.obstacles) {
+      if (hits(pb, boxOf(o))) return gameOver();
+    }
+
+    const before = state.score;
+    state.score += dx * 0.08;
+    if ((state.score | 0) % 100 < (before | 0) % 100) state.flash = 0.6;
+    if (state.flash > 0) state.flash = Math.max(0, state.flash - dt);
+  }
+
+  function gameOver() {
+    state.mode = "over";
+    const s = state.score | 0;
+    if (s > state.best) { state.best = s; store.set(s); }
+    $("ovTitle").textContent = "Wiped out";
+    $("ovSub").innerHTML = `ran <b class="best">${s}</b> · best <b class="best">${state.best}</b>`;
+    $("overlay").hidden = false;
+    syncScores();
+  }
+
+  function start() {
+    reset();
+    state.mode = "run";
+    $("overlay").hidden = true;
+  }
+
+  function syncScores() {
+    $("score").textContent = state.score | 0;
+    $("best").textContent = state.best;
+  }
+
+  // --- drawing ---------------------------------------------------------------
+  // One slow dusk->night cycle so a long run visibly changes light.
+  function sky() {
+    const phase = (Math.sin(state.t * 0.06) + 1) / 2;      // 0 dusk .. 1 night
+    return {
+      phase,
+      top: `rgb(${lerp(64, 14, phase) | 0}, ${lerp(38, 11, phase) | 0}, ${lerp(74, 26, phase) | 0})`,
+      bot: `rgb(${lerp(214, 26, phase) | 0}, ${lerp(122, 20, phase) | 0}, ${lerp(74, 42, phase) | 0})`,
+      ridge: `rgb(${lerp(38, 16, phase) | 0}, ${lerp(24, 12, phase) | 0}, ${lerp(46, 26, phase) | 0})`,
+      ink: phase > 0.55 ? "#fdf6e8" : "#2a1630"
+    };
+  }
+
+  function draw() {
+    const s = sky();
+    const g = ctx.createLinearGradient(0, 0, 0, GROUND);
+    g.addColorStop(0, s.top); g.addColorStop(1, s.bot);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, VIEW.w, GROUND);
+
+    // stars fade in with night
+    if (s.phase > 0.35) {
+      ctx.fillStyle = "#fdf6e8";
+      for (const st of state.stars) {
+        ctx.globalAlpha = (s.phase - 0.35) / 0.65 * (0.35 + 0.65 * Math.abs(Math.sin(state.t + st.tw)));
+        ctx.fillRect(st.x, st.y, st.r * 2, st.r * 2);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // parallax ridges, far first
+    for (const dep of [0.25, 0.45]) {
+      ctx.fillStyle = dep === 0.25 ? shade(s.ridge, 0.55) : shade(s.ridge, 0.8);
+      for (const h of state.hills) {
+        if (h.depth !== dep) continue;
+        ctx.beginPath();
+        ctx.moveTo(h.x, GROUND);
+        ctx.lineTo(h.x + h.w * 0.5, GROUND - h.h);
+        ctx.lineTo(h.x + h.w, GROUND);
+        ctx.closePath(); ctx.fill();
+      }
+    }
+
+    // ground
+    ctx.fillStyle = "#0f0b16";
+    ctx.fillRect(0, GROUND, VIEW.w, VIEW.h - GROUND);
+    ctx.strokeStyle = s.phase > 0.55 ? "#4a3b5c" : "#6b4a4a";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0, GROUND + 1); ctx.lineTo(VIEW.w, GROUND + 1); ctx.stroke();
+    ctx.fillStyle = "#2a2136";
+    for (const gr of state.grit) ctx.fillRect(gr.x, gr.y, gr.w, 2);
+
+    for (const o of state.obstacles) drawObstacle(o, s);
+    drawPlayer(state.player, s);
+
+    // milestone flash
+    if (state.flash > 0) {
+      ctx.globalAlpha = state.flash;
+      ctx.fillStyle = "#ffb454";
+      ctx.font = "600 13px ui-monospace, monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(((state.score | 0) / 100 | 0) * 100 + "", VIEW.w - 16, 28);
+      ctx.globalAlpha = 1;
+      ctx.textAlign = "left";
+    }
+  }
+
+  function shade(rgb, k) {
+    const m = rgb.match(/\d+/g).map((n) => Math.round(n * k));
+    return `rgb(${m[0]}, ${m[1]}, ${m[2]})`;
+  }
+
+  function drawObstacle(o, s) {
+    const b = boxOf(o);
+    ctx.fillStyle = s.phase > 0.55 ? "#3a2f4a" : "#3d2436";
+    ctx.strokeStyle = s.phase > 0.55 ? "#6d5b85" : "#7a4a52";
+    ctx.lineWidth = 2;
+
+    if (o.kind === "drone") {
+      ctx.beginPath();
+      ctx.ellipse(b.x + b.w / 2, b.y + b.h / 2, b.w / 2, b.h / 2, 0, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      // rotor, flicks with time so it reads as flying
+      const f = Math.sin(state.t * 30) > 0 ? 10 : 4;
+      ctx.beginPath();
+      ctx.moveTo(b.x + b.w / 2 - f, b.y - 3);
+      ctx.lineTo(b.x + b.w / 2 + f, b.y - 3);
+      ctx.stroke();
+      ctx.fillStyle = "#ffb454";
+      ctx.fillRect(b.x + b.w / 2 - 2, b.y + b.h / 2 - 2, 4, 4);
+      return;
+    }
+    if (o.kind === "cluster") {
+      const n = 3, step = b.w / n;
+      for (let i = 0; i < n; i++) {
+        const hh = b.h * (i === 1 ? 1 : 0.68);
+        rock(b.x + i * step, GROUND - hh, step - 2, hh);
+      }
+      return;
+    }
+    rock(b.x, b.y, b.w, b.h);
+
+    function rock(x, y, w, h) {
+      ctx.beginPath();
+      ctx.moveTo(x, GROUND);
+      ctx.lineTo(x + w * 0.2, y + h * 0.12);
+      ctx.lineTo(x + w * 0.62, y);
+      ctx.lineTo(x + w, y + h * 0.3);
+      ctx.lineTo(x + w, GROUND);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+    }
+  }
+
+  function drawPlayer(p, s) {
+    const h = p.ducking && p.onGround ? DUCK_H : STAND_H;
+    const x = 92, y = GROUND - p.y - h;
+    const body = s.phase > 0.55 ? "#fdf6e8" : "#fff3dc";
+    // the shell stops short of the ground so the legs have somewhere to be
+    const legLen = p.ducking && p.onGround ? 5 : 11;
+    const shellH = h - legLen;
+    const feet = GROUND - p.y;
+
+    // legs: two alternating bars while grounded, tucked in the air
+    ctx.strokeStyle = body; ctx.lineWidth = 3; ctx.lineCap = "round";
+    const swing = p.onGround ? Math.sin(p.legT) * 7 : 4;
+    ctx.beginPath();
+    ctx.moveTo(x + 11, y + shellH); ctx.lineTo(x + 11 + swing, feet);
+    ctx.moveTo(x + BODY_W - 13, y + shellH); ctx.lineTo(x + BODY_W - 13 - swing, feet);
+    ctx.stroke();
+
+    // body
+    ctx.fillStyle = body;
+    round(x, y, BODY_W, shellH, 8);
+    ctx.fill();
+
+    // visor faces the direction of travel; amber so it reads at speed
+    ctx.fillStyle = "#14101c";
+    const vh = p.ducking && p.onGround ? 6 : 9;
+    round(x + BODY_W - 16, y + (shellH - vh) / 2, 12, vh, 3);
+    ctx.fill();
+    ctx.fillStyle = "#ffb454";
+    ctx.fillRect(x + BODY_W - 8, y + (shellH - vh) / 2 + 2, 3, 3);
+
+    // scarf trail, longer the faster you go
+    ctx.strokeStyle = "#ffb454"; ctx.lineWidth = 3;
+    const tail = 10 + (state.speed - SPEED_0) / 22;
+    ctx.beginPath();
+    ctx.moveTo(x + 4, y + 8);
+    ctx.quadraticCurveTo(x - tail * 0.5, y + 4 + Math.sin(state.t * 18) * 3, x - tail, y + 12);
+    ctx.stroke();
+  }
+
+  function round(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // --- input -----------------------------------------------------------------
+  function jump() {
+    if (state.mode !== "run") { start(); return; }
+    const p = state.player;
+    if (p.onGround) { p.vy = JUMP_V; p.onGround = false; state.held = true; }
+  }
+  function release() {
+    const p = state.player;
+    if (state.held && p.vy < 0) p.vy *= CUT;      // short tap = short hop
+    state.held = false;
+  }
+  function duck(on) {
+    if (state.mode !== "run") return;
+    state.player.ducking = on;
+    if (on && !state.player.onGround) state.player.vy += 260;   // fast-fall
+  }
+
+  addEventListener("keydown", (e) => {
+    if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") { e.preventDefault(); jump(); }
+    else if (e.code === "ArrowDown" || e.code === "KeyS") { e.preventDefault(); duck(true); }
+    else if (e.code === "KeyR" && state.mode === "over") start();
+  });
+  addEventListener("keyup", (e) => {
+    if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") release();
+    else if (e.code === "ArrowDown" || e.code === "KeyS") duck(false);
+  });
+
+  // touch: lower third ducks, anywhere else jumps
+  const stage = canvas.parentElement;
+  stage.addEventListener("pointerdown", (e) => {
+    const r = canvas.getBoundingClientRect();
+    if (state.mode === "run" && (e.clientY - r.top) / r.height > 0.66) duck(true);
+    else jump();
+  });
+  stage.addEventListener("pointerup", () => { release(); duck(false); });
+  stage.addEventListener("pointercancel", () => { release(); duck(false); });
+  addEventListener("blur", () => { release(); duck(false); });
+
+  // --- loop ------------------------------------------------------------------
+  function fit() {
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    canvas.width = VIEW.w * dpr;
+    canvas.height = VIEW.h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  let last = 0;
+  function frame(ts) {
+    const dt = Math.min(0.05, last ? (ts - last) / 1000 : 0.016);
+    last = ts;
+    step(dt);
+    draw();
+    if (state.mode === "run") syncScores();
+    requestAnimationFrame(frame);
+  }
+
+  fit();
+  seedScenery();
+  syncScores();
+  addEventListener("resize", fit);
+  requestAnimationFrame(frame);
+
+  // Headless check: #selftest runs the sim with a bot so the physics and
+  // collision path are exercised without a human at the keyboard.
+  if (location.hash === "#selftest") {
+    start();
+    let frames = 0, jumps = 0, ducks = 0, best = 0;
+    const deaths = [];
+    while (frames < 6000) {
+      const p = state.player;
+      const front = 92 + BODY_W;
+      const next = state.obstacles.find((o) => o.x + o.w > 92);
+      if (next) {
+        const gap = next.x - front;
+        if (next.kind === "drone") {
+          // hold the duck until the drone stops being the next obstacle --
+          // releasing while it still overlaps the body is what kills you
+          const want = gap < state.speed * 0.30;
+          if (want !== p.ducking) { duck(want); if (want) ducks++; }
+        } else {
+          if (p.ducking) duck(false);
+          if (gap < state.speed * 0.36 && gap > 0 && p.onGround) { jump(); jumps++; }
+        }
+      }
+      const scoreBefore = state.score;
+      step(1 / 60);
+      if (state.mode === "over") {
+        const killer = state.obstacles.find((o) => o.x < front && o.x + o.w > 92);
+        deaths.push(`${killer ? killer.kind : "?"}@${scoreBefore | 0}`);
+        best = Math.max(best, scoreBefore | 0);
+        start();
+      }
+      frames++;
+    }
+    best = Math.max(best, state.score | 0);
+    console.log(`[ridge-runner] selftest: ${frames} frames (${(frames / 60).toFixed(0)}s), ` +
+      `${jumps} jumps, ${ducks} ducks, ${deaths.length} deaths, furthest run ${best}, ` +
+      `speed ${state.speed | 0}px/s`);
+    if (deaths.length) console.log(`[ridge-runner] deaths: ${deaths.join(", ")}`);
+    if (best <= 0) console.error("[ridge-runner] selftest: bot never scored");
+  }
+  console.log("[ridge-runner] ready" + (store.volatile ? " (no localStorage on this origin, best is per-session)" : ""));
+})();
+</script>
+</body>
+</html>
