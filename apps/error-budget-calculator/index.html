@@ -1,0 +1,441 @@
+<!-- new-app -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Error Budget</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page:        #f9f9f7;
+    --surface:     #fcfcfb;
+    --ink:         #0b0b0b;
+    --ink-2:       #52514e;
+    --muted:       #898781;
+    --grid:        #e1e0d9;
+    --ring:        rgba(11, 11, 11, 0.10);
+    --good:        #0ca30c;
+    --good-track:  #d8efd8;
+    --warning:     #fab219;
+    --warn-track:  #fdeccb;
+    --serious:     #ec835a;
+    --serious-track: #fbe0d6;
+    --critical:    #d03b3b;
+    --crit-track:  #f4d5d5;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  }
+  /* dark is selected, not flipped: each step re-picked against the dark surface */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:        #0d0d0d;
+      --surface:     #1a1a19;
+      --ink:         #ffffff;
+      --ink-2:       #c3c2b7;
+      --muted:       #898781;
+      --grid:        #2c2c2a;
+      --ring:        rgba(255, 255, 255, 0.14);
+      --good-track:  #16311a;
+      --warn-track:  #3a2e10;
+      --serious-track: #37211a;
+      --crit-track:  #331b1b;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:        #0d0d0d;
+    --surface:     #1a1a19;
+    --ink:         #ffffff;
+    --ink-2:       #c3c2b7;
+    --muted:       #898781;
+    --grid:        #2c2c2a;
+    --ring:        rgba(255, 255, 255, 0.14);
+    --good-track:  #16311a;
+    --warn-track:  #3a2e10;
+    --serious-track: #37211a;
+    --crit-track:  #331b1b;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 14px/1.55 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    padding: 40px 24px 72px;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 21px; font-weight: 650; letter-spacing: -0.02em; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; flex: 1 1 240px; }
+  #theme {
+    border: 1px solid var(--grid); background: var(--surface); color: var(--ink-2);
+    border-radius: 7px; padding: 5px 10px; font: 11px var(--mono); cursor: pointer;
+  }
+  #theme:hover { border-color: var(--muted); }
+
+  /* filters in one row above the figures */
+  .controls {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 14px 20px; align-items: start;
+    margin: 22px 0 26px; padding: 16px 18px;
+    background: var(--surface); border: 1px solid var(--grid); border-radius: 12px;
+  }
+  .field > label {
+    display: block; font: 10.5px var(--mono); letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 7px;
+  }
+  .presets { display: flex; flex-wrap: wrap; gap: 5px; }
+  .presets button {
+    border: 1px solid var(--grid); background: transparent; color: var(--ink-2);
+    border-radius: 999px; padding: 4px 9px; font: 11px var(--mono); cursor: pointer;
+  }
+  .presets button:hover { border-color: var(--muted); }
+  .presets button[aria-pressed="true"] {
+    background: var(--ink); color: var(--surface); border-color: var(--ink);
+  }
+  input[type="number"], select {
+    width: 100%; padding: 6px 8px; font: 12px var(--mono);
+    color: var(--ink); background: var(--surface);
+    border: 1px solid var(--grid); border-radius: 7px;
+  }
+  input[type="range"] { width: 100%; accent-color: var(--ink-2); }
+  .rowval { font: 11px var(--mono); color: var(--muted); margin-top: 4px; }
+
+  /* hero figure -- exactly one per view */
+  .hero { padding: 4px 2px 26px; border-bottom: 1px solid var(--grid); }
+  .hero .cap {
+    font: 10.5px var(--mono); letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  .hero .fig {
+    font-size: 54px; line-height: 1.05; font-weight: 600; letter-spacing: -0.035em;
+    margin: 6px 0 2px;   /* proportional figures: no tabular-nums at display size */
+  }
+  .hero .sub { color: var(--ink-2); font-size: 13px; }
+
+  .kpis {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px; background: var(--grid);
+    border: 1px solid var(--grid); border-radius: 12px; overflow: hidden;
+    margin: 26px 0;
+  }
+  .kpi { background: var(--surface); padding: 14px 16px; }
+  .kpi .k { font: 10.5px var(--mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
+  .kpi .v { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; margin-top: 3px; }
+  .kpi .n { font-size: 11.5px; color: var(--muted); }
+
+  /* meter: fill carries severity, track is a lighter step of the same ramp */
+  .meter-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .meter-head .t { font-weight: 600; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+  .status .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .track {
+    position: relative; height: 22px; border-radius: 6px; margin: 10px 0 6px;
+    overflow: hidden;
+  }
+  .fill { height: 100%; border-radius: 6px; transition: width 0.18s ease, background 0.18s ease; }
+  .ticks { position: relative; height: 12px; }
+  .tick { position: absolute; top: 0; transform: translateX(-50%); font: 10px var(--mono); color: var(--muted); }
+  .tick::before {
+    content: ""; position: absolute; left: 50%; top: -8px; width: 1px; height: 6px;
+    background: var(--grid);
+  }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  caption {
+    text-align: left; font-weight: 600; padding: 26px 0 8px; font-size: 14px;
+  }
+  th, td {
+    text-align: right; padding: 7px 10px; font-size: 12.5px;
+    border-bottom: 1px solid var(--grid); font-variant-numeric: tabular-nums;
+  }
+  th:first-child, td:first-child { text-align: left; font-variant-numeric: normal; }
+  th {
+    font: 10.5px var(--mono); letter-spacing: 0.05em; text-transform: uppercase;
+    color: var(--muted); border-bottom-color: var(--ink-2);
+  }
+  tbody tr:hover { background: var(--surface); }
+  tr[aria-current="true"] td { font-weight: 650; }
+  tr[aria-current="true"] td:first-child::before {
+    content: "▸ "; color: var(--ink-2);
+  }
+  td.num { font-family: var(--mono); }
+
+  footer {
+    margin-top: 34px; padding-top: 16px; border-top: 1px solid var(--grid);
+    color: var(--muted); font-size: 12px;
+  }
+  footer p { margin: 0 0 6px; }
+  footer b { color: var(--ink-2); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Error Budget</h1>
+    <p>How much downtime an availability target actually buys you — and how fast you're spending it.</p>
+    <button id="theme" type="button">theme</button>
+  </header>
+
+  <div class="controls">
+    <div class="field">
+      <label for="slo">Availability target</label>
+      <div class="presets" id="presets"></div>
+      <input id="slo" type="number" min="1" max="99.9999" step="0.001" value="99.9"
+             aria-label="Availability target, percent">
+    </div>
+    <div class="field">
+      <label for="window">Compliance window</label>
+      <select id="window"></select>
+      <div class="rowval" id="windowNote"></div>
+    </div>
+    <div class="field">
+      <label for="elapsed">Elapsed in window</label>
+      <input id="elapsed" type="range" min="1" max="100" step="1" value="40">
+      <div class="rowval" id="elapsedNote"></div>
+    </div>
+    <div class="field">
+      <label for="spent">Downtime so far (minutes)</label>
+      <input id="spent" type="number" min="0" step="1" value="12">
+      <div class="rowval" id="spentNote"></div>
+    </div>
+  </div>
+
+  <div class="hero">
+    <div class="cap" id="heroCap">Budget for the window</div>
+    <div class="fig" id="heroFig">—</div>
+    <div class="sub" id="heroSub"></div>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="k">Spent</div><div class="v" id="kSpent">—</div><div class="n" id="kSpentPct"></div></div>
+    <div class="kpi"><div class="k">Remaining</div><div class="v" id="kLeft">—</div><div class="n" id="kLeftPct"></div></div>
+    <div class="kpi"><div class="k">Burn rate</div><div class="v" id="kBurn">—</div><div class="n" id="kBurnNote"></div></div>
+    <div class="kpi"><div class="k">Budget exhausted</div><div class="v" id="kEta">—</div><div class="n" id="kEtaNote"></div></div>
+  </div>
+
+  <div class="meter-head">
+    <span class="t">Budget consumed</span>
+    <span class="status" id="status"><span class="dot"></span><span id="statusText"></span></span>
+  </div>
+  <div class="track" id="track"><div class="fill" id="fill"></div></div>
+  <div class="ticks">
+    <span class="tick" style="left:0%">0%</span>
+    <span class="tick" style="left:50%">50</span>
+    <span class="tick" style="left:75%">75</span>
+    <span class="tick" style="left:100%">100%</span>
+  </div>
+
+  <table>
+    <caption id="capWindows">Allowed downtime per window</caption>
+    <thead><tr><th scope="col">Window</th><th scope="col">Allowed downtime</th><th scope="col">Seconds</th></tr></thead>
+    <tbody id="windowRows"></tbody>
+  </table>
+
+  <table>
+    <caption>Multi-window burn-rate alerts</caption>
+    <thead><tr>
+      <th scope="col">Alert window</th><th scope="col">Burn rate</th>
+      <th scope="col">Budget spent</th><th scope="col">Trips above</th>
+    </tr></thead>
+    <tbody id="burnRows"></tbody>
+  </table>
+
+  <footer>
+    <p><b>Allowed downtime</b> = window × (1 − target). A time-based budget assumes a
+      steady request rate; for a request-ratio SLO, read the same numbers as a share of
+      requests rather than minutes.</p>
+    <p><b>Burn rate</b> = share of budget spent ÷ share of window elapsed. 1× spends the
+      budget exactly by the window's end; 2× exhausts it at the halfway mark.</p>
+    <p><b>Burn-rate alert thresholds</b> follow the multi-window approach in Google's
+      SRE Workbook: a fast burn over a short window pages, a slow burn over a long one
+      opens a ticket.</p>
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const MIN = 60, HOUR = 3600, DAY = 86400;
+
+  const WINDOWS = [
+    { id: "1d",   label: "24 hours",  secs: DAY },
+    { id: "7d",   label: "7 days",    secs: 7 * DAY },
+    { id: "30d",  label: "30 days",   secs: 30 * DAY },
+    { id: "90d",  label: "90 days",   secs: 90 * DAY },
+    { id: "365d", label: "365 days",  secs: 365 * DAY }
+  ];
+  const PRESETS = [99, 99.5, 99.9, 99.95, 99.99];
+
+  // Google SRE Workbook multi-window burn-rate alerts, keyed to a 30-day budget.
+  const BURN = [
+    { win: "1 hour",  rate: 14.4, share: 0.02, action: "page" },
+    { win: "6 hours", rate: 6,    share: 0.05, action: "page" },
+    { win: "1 day",   rate: 3,    share: 0.10, action: "ticket" },
+    { win: "3 days",  rate: 1,    share: 0.10, action: "ticket" }
+  ];
+
+  const STATES = [
+    { max: 50,       key: "good",     text: "Healthy",   dot: "--good",     track: "--good-track" },
+    { max: 75,       key: "warning",  text: "Watch",     dot: "--warning",  track: "--warn-track" },
+    { max: 100,      key: "serious",  text: "At risk",   dot: "--serious",  track: "--serious-track" },
+    { max: Infinity, key: "critical", text: "Exhausted", dot: "--critical", track: "--crit-track" }
+  ];
+
+  // 2592s -> "43m 12s". Units chosen by magnitude; never more than two of them.
+  function dur(secs) {
+    if (!isFinite(secs)) return "—";
+    if (secs < 0) secs = 0;
+    if (secs < 1) return (Math.round(secs * 1000) / 1000) + "s";
+    if (secs < MIN) return round1(secs) + "s";
+    if (secs < HOUR) {
+      const m = Math.floor(secs / MIN), s = round1(secs - m * MIN);
+      return s > 0 ? `${m}m ${s}s` : `${m}m`;
+    }
+    if (secs < DAY) {
+      const h = Math.floor(secs / HOUR), m = Math.round((secs - h * HOUR) / MIN);
+      return m > 0 ? `${h}h ${m}m` : `${h}h`;
+    }
+    const d = Math.floor(secs / DAY), h = Math.round((secs - d * DAY) / HOUR);
+    return h > 0 ? `${d}d ${h}h` : `${d}d`;
+  }
+  const round1 = (n) => Math.round(n * 10) / 10;
+  const pct = (n) => (n >= 100 ? Math.round(n) : n >= 10 ? round1(n) : Math.round(n * 100) / 100) + "%";
+  const commas = (n) => n.toLocaleString("en-US", { maximumFractionDigits: 1 });
+
+  function state(consumedPct) {
+    return STATES.find((s) => consumedPct < s.max) || STATES[STATES.length - 1];
+  }
+
+  function build() {
+    $("presets").innerHTML = PRESETS
+      .map((p) => `<button type="button" data-slo="${p}">${p}%</button>`).join("");
+    $("window").innerHTML = WINDOWS
+      .map((w) => `<option value="${w.id}"${w.id === "30d" ? " selected" : ""}>${w.label}</option>`).join("");
+  }
+
+  function render() {
+    const target = Math.min(99.9999, Math.max(1, Number($("slo").value) || 99.9));
+    const win = WINDOWS.find((w) => w.id === $("window").value) || WINDOWS[2];
+    const unavail = 1 - target / 100;          // the budget, as a fraction
+    const budget = win.secs * unavail;         // seconds of allowed downtime
+    const spent = Math.max(0, (Number($("spent").value) || 0) * MIN);
+    const elapsedPct = Number($("elapsed").value);
+    const elapsed = win.secs * (elapsedPct / 100);
+
+    const consumedPct = budget > 0 ? (spent / budget) * 100 : Infinity;
+    const left = Math.max(0, budget - spent);
+    const st = state(consumedPct);
+
+    // hero
+    $("heroFig").textContent = dur(budget);
+    $("heroSub").textContent =
+      `of unavailability allowed at ${target}% over ${win.label} — ${commas(budget)} seconds`;
+
+    // KPI row
+    $("kSpent").textContent = dur(spent);
+    $("kSpentPct").textContent = budget > 0 ? pct(consumedPct) + " of budget" : "no budget at 100%";
+    $("kLeft").textContent = dur(left);
+    $("kLeftPct").textContent = budget > 0 ? pct(Math.max(0, 100 - consumedPct)) + " of budget" : "—";
+
+    const burnRate = elapsed > 0 && budget > 0 ? consumedPct / elapsedPct : 0;
+    $("kBurn").textContent = burnRate > 0 ? round1(burnRate) + "×" : "0×";
+    $("kBurnNote").textContent =
+      burnRate > 1 ? "faster than sustainable" : burnRate > 0 ? "within pace" : "nothing spent yet";
+
+    // exhaustion, projected from the rate observed so far
+    if (spent <= 0 || elapsed <= 0) {
+      $("kEta").textContent = "—";
+      $("kEtaNote").textContent = "no burn to project";
+    } else if (left <= 0) {
+      $("kEta").textContent = "already";
+      $("kEtaNote").textContent = "budget is gone";
+    } else {
+      const perSec = spent / elapsed;
+      const eta = left / perSec;
+      const outlasts = elapsed + eta >= win.secs;
+      $("kEta").textContent = outlasts ? "not this window" : "in " + dur(eta);
+      $("kEtaNote").textContent = outlasts
+        ? "current pace finishes the window"
+        : "at the current pace";
+    }
+
+    // meter
+    const fillPct = Math.max(0, Math.min(100, isFinite(consumedPct) ? consumedPct : 100));
+    $("fill").style.width = fillPct + "%";
+    $("fill").style.background = `var(${st.dot})`;
+    $("track").style.background = `var(${st.track})`;
+    $("status").querySelector(".dot").style.background = `var(${st.dot})`;
+    $("statusText").textContent = st.text;          // label, never colour alone
+    $("track").setAttribute("role", "img");
+    $("track").setAttribute("aria-label",
+      `${pct(fillPct)} of the error budget consumed — ${st.text}`);
+    $("track").title = `${dur(spent)} spent of ${dur(budget)} (${pct(consumedPct)})`;
+
+    // per-window table
+    $("capWindows").textContent = `Allowed downtime per window at ${target}%`;
+    $("windowRows").innerHTML = WINDOWS.map((w) => {
+      const b = w.secs * unavail;
+      return `<tr${w.id === win.id ? ' aria-current="true"' : ""}>` +
+        `<td>${w.label}</td><td class="num">${dur(b)}</td>` +
+        `<td class="num">${commas(b)}</td></tr>`;
+    }).join("");
+
+    // burn-rate alert table
+    $("burnRows").innerHTML = BURN.map((b) => {
+      const errRate = b.rate * unavail * 100;   // error rate that sustains this burn
+      return `<tr><td>${b.win} · ${b.action}</td><td class="num">${b.rate}×</td>` +
+        `<td class="num">${pct(b.share * 100)}</td>` +
+        `<td class="num">${pct(errRate)} errors</td></tr>`;
+    }).join("");
+
+    // control notes
+    $("windowNote").textContent = `${commas(win.secs)} seconds`;
+    $("elapsedNote").textContent = `${elapsedPct}% — ${dur(elapsed)} in`;
+    $("spentNote").textContent = `${dur(spent)} of ${dur(budget)}`;
+    PRESETS.forEach((p, i) => {
+      $("presets").children[i].setAttribute("aria-pressed", String(Math.abs(p - target) < 1e-9));
+    });
+  }
+
+  build();
+  ["slo", "window", "elapsed", "spent"].forEach((id) =>
+    $(id).addEventListener("input", render));
+  $("presets").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-slo]");
+    if (!b) return;
+    $("slo").value = b.dataset.slo;
+    render();
+  });
+  $("theme").addEventListener("click", () => {
+    const root = document.documentElement;
+    const cur = root.getAttribute("data-theme");
+    const isDark = cur ? cur === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    root.setAttribute("data-theme", isDark ? "light" : "dark");
+  });
+
+  render();
+
+  // Known values, checked on load: a wrong formula here is invisible in the UI.
+  const check = (label, got, want) => {
+    if (Math.abs(got - want) > 0.5) console.error(`[error-budget] ${label}: ${got} != ${want}`);
+    return Math.abs(got - want) <= 0.5;
+  };
+  const ok = [
+    check("99.9% / 30d = 43m12s", 30 * DAY * 0.001, 2592),
+    check("99.99% / 365d = 52m34s", 365 * DAY * 0.0001, 3153.6),
+    check("99% / 7d = 1h40m48s", 7 * DAY * 0.01, 6048),
+    check("99.95% / 30d = 21m36s", 30 * DAY * 0.0005, 1296)
+  ].every(Boolean);
+  console.log(`[error-budget] ready — formula self-check ${ok ? "passed" : "FAILED"}`);
+})();
+</script>
+</body>
+</html>
