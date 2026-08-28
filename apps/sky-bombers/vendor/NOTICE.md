@@ -29,3 +29,17 @@ Fetched from unpkg on 2026-08-28.
   to deploy, but it is someone else's best-effort infrastructure, and WebRTC
   without a TURN relay can fail behind strict NATs and on some cellular
   networks.
+
+## Third-party ICE servers
+
+WebRTC needs help crossing NATs. The app configures public STUN (Google,
+Cloudflare) and, as a fallback, the free public TURN relay
+`openrelay.metered.ca` with its published open credentials.
+
+TURN is a **relay**: when a direct peer connection cannot be established, game
+traffic passes through that third party rather than device-to-device. It is
+positions and inputs only, no accounts and no personal data, but it is worth
+knowing it leaves the two devices. Direct connections are always preferred and
+TURN is only used when they fail. Removing the `turn:` entry from `RTC` in
+`index.html` restores strictly peer-to-peer behaviour, at the cost of failing on
+restrictive networks.
