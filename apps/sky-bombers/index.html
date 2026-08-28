@@ -684,16 +684,25 @@ function simulate(dt) {
 }
 
 /* ---------------------------------------------------------------- netcode */
-const RTC = {
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    { urls: "stun:stun.cloudflare.com:3478" },
-    { urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443"],
-      username: "openrelayproject", credential: "openrelayproject" }
-  ]
-};
+// UDP first, then TURN over TCP, then TURN over TLS/443 -- the last one looks
+// like ordinary HTTPS and is what survives hotel and corporate networks.
+const ICE = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun.cloudflare.com:3478" },
+  { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
+  { urls: "turns:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
+];
+const rtcConfig = (relayOnly) => ({
+  iceServers: ICE,
+  iceTransportPolicy: relayOnly ? "relay" : "all",
+  iceCandidatePoolSize: 2
+});
 
-let peer = null, hostConn = null, joinWatchdog = 0;
+let peer = null, hostConn = null, joinWatchdog = 0, relayRetry = 0;
+let iceKind = "—", usingRelayOnly = false;
 const guests = new Map();          // peerId -> {id, name, color, look, slot, conn}
 let netErr = "";
 
@@ -723,10 +732,13 @@ function goOnline(room) {
   if (peer) { try { peer.destroy(); } catch (_) {} }
   guests.clear(); hostConn = null;
   // First claim on the room id becomes host; a taken id means the room exists.
-  peer = new Peer(peerIdFor(room), { debug: 0, config: RTC });
+  peer = new Peer(peerIdFor(room), { debug: 0, config: rtcConfig(false) });
 
   peer.on("open", () => {
     me.isHost = true;
+    clearTimeout(joinWatchdog); clearTimeout(relayRetry);
+    usingRelayOnly = false;
+    showErr("");
     log("host of room " + room);
     seatRoster();
     startRound();
@@ -765,36 +777,57 @@ function becomeGuest(room, hostIfEmpty) {
   me.isHost = false;
   clearTimeout(joinWatchdog);
   if (peer) { try { peer.destroy(); } catch (_) {} }
-  peer = new Peer({ debug: 0, config: RTC });
+  peer = new Peer({ debug: 0, config: rtcConfig(usingRelayOnly) });
   peer.on("open", () => {
     const conn = peer.connect(peerIdFor(room), { reliable: true });
     hostConn = conn;
     conn.on("open", () => {
       log("joined room " + room);
-      clearTimeout(joinWatchdog);
+      clearTimeout(joinWatchdog); clearTimeout(relayRetry);
       showErr("");
       conn.send({ t: "hello", name: me.name, color: me.color, look: me.look });
     });
     conn.on("data", onGuestData);
-    conn.on("close", () => { showErr("Host left — the room is gone."); hostConn = null; });
+    conn.on("close", () => {
+      hostConn = null;
+      // Host migration: whoever is still here claims the room. Jitter so two
+      // survivors do not claim it in the same instant.
+      showErr("Host left — taking over room " + me.room + "…");
+      setTimeout(() => {
+        if (hostConn && hostConn.open) return;
+        S.synced = false;
+        goOnline(me.room);
+      }, 400 + Math.random() * 1400);
+    });
   });
   peer.on("error", (e) => {
     if (e.type === "peer-unavailable") {
       // nobody is hosting this code: open it ourselves
-      if (hostIfEmpty) { log("no host for " + room + " — hosting it"); goOnline(room); return; }
+      if (hostIfEmpty) {
+        log("no host for " + room + " — hosting it");
+        setTimeout(() => { if (!me.isHost) goOnline(room); }, Math.random() * 350);
+        return;
+      }
       showErr("No room called " + room + ".");
     } else showErr("Network: " + e.type);
   });
 
   // Signaling succeeding but the peer link never opening is the NAT case, and
   // it is silent by default. Name it, and offer the way out.
-  clearTimeout(joinWatchdog);
+  // A direct connection that has not formed in 7s is usually blocked, not slow.
+  // Retry through TURN only before giving up -- that path looks like HTTPS.
+  clearTimeout(joinWatchdog); clearTimeout(relayRetry);
+  relayRetry = setTimeout(() => {
+    if (me.isHost || (hostConn && hostConn.open) || usingRelayOnly) return;
+    log("direct path failed — retrying through TURN relay");
+    usingRelayOnly = true;
+    becomeGuest(room, false);
+  }, 7000);
   joinWatchdog = setTimeout(() => {
-    if (hostConn && hostConn.open) return;
-    showErr("Reached the signalling server but the peer link to room " + room +
-            " never opened — usually a firewall or mobile-network NAT. " +
-            "Try both devices on the same wifi.", true);
-  }, 9000);
+    if (me.isHost || (hostConn && hostConn.open)) return;
+    showErr("Could not open a peer link to room " + room + " even through a relay. " +
+            "Both devices on the same wifi is the best bet; some mobile networks block this.", true);
+  }, 16000);
 
   paintRoom();
 }
@@ -1334,7 +1367,23 @@ function connState() {
   };
 }
 
+function refreshIce() {
+  const conns = hostConn ? [hostConn] : Array.from(guests.values()).map((g) => g.conn).filter(Boolean);
+  const pc = conns[0] && conns[0].peerConnection;
+  if (!pc || !pc.getStats) { iceKind = "—"; return; }
+  pc.getStats().then((stats) => {
+    let pairId = null, localId = null, kind = "—";
+    stats.forEach((r) => { if (r.type === "transport" && r.selectedCandidatePairId) pairId = r.selectedCandidatePairId; });
+    stats.forEach((r) => {
+      if (r.type === "candidate-pair" && (r.id === pairId || (!pairId && r.selected))) localId = r.localCandidateId;
+    });
+    stats.forEach((r) => { if (r.id === localId && r.candidateType) kind = r.candidateType; });
+    iceKind = kind;      // host = same network, srflx = via STUN, relay = via TURN
+  }).catch(() => {});
+}
+
 function paintDiag() {
+  refreshIce();
   const c = connState();
   const local = /^(localhost|127\.|0\.0\.0\.0|\[::1\])/.test(location.hostname) || location.protocol === "file:";
   $("diag").innerHTML =
@@ -1342,6 +1391,7 @@ function paintDiag() {
     `<div>signal <b>${c.signal}</b></div>` +
     `<div>link <b>${c.link}</b></div>` +
     `<div>ice <b>${c.ice}</b></div>` +
+    `<div>via <b>${iceKind}${usingRelayOnly ? " (relay-only)" : ""}</b></div>` +
     (local ? `<span class="warn">⚠ This URL only works on this computer — a phone cannot reach it. Open the deployed page instead.</span>` : "") +
     (netErr ? `<span class="warn">${netErr}</span>` : "");
 }
