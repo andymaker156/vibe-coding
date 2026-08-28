@@ -30,16 +30,24 @@ Fetched from unpkg on 2026-08-28.
   without a TURN relay can fail behind strict NATs and on some cellular
   networks.
 
-## Third-party ICE servers
+## ICE servers (STUN / TURN)
 
-WebRTC needs help crossing NATs. The app configures public STUN (Google,
-Cloudflare) and, as a fallback, the free public TURN relay
-`openrelay.metered.ca` with its published open credentials.
+The app configures public STUN only (Google, Cloudflare). STUN discovers your
+public address; it cannot relay traffic.
 
-TURN is a **relay**: when a direct peer connection cannot be established, game
-traffic passes through that third party rather than device-to-device. It is
-positions and inputs only, no accounts and no personal data, but it is worth
-knowing it leaves the two devices. Direct connections are always preferred and
-TURN is only used when they fail. Removing the `turn:` entry from `RTC` in
-`index.html` restores strictly peer-to-peer behaviour, at the cost of failing on
-restrictive networks.
+**There is currently no TURN relay configured, and that is deliberate.** The
+commonly-cited free relay — `turn:openrelay.metered.ca` with the
+`openrelayproject` credentials — no longer issues allocations: probing it over
+TCP returns `400 TURN allocate error`, and Metered's documentation now requires a
+free account whose API key mints the `iceServers` array. Shipping those dead
+credentials only produces a silent failure, so `TURN_SERVERS` in `index.html` is
+an empty array with a comment showing what to paste.
+
+Consequence: two devices that cannot reach each other **directly** cannot
+connect at all. In practice that means guest and office wifi (client isolation
+blocks device-to-device traffic) and most cellular carriers. A home network
+normally works without any relay.
+
+If a relay is added later, note that TURN is exactly that — a relay — so game
+traffic passes through that third party when a direct path fails. It stays
+end-to-end encrypted by DTLS; the relay cannot read it.

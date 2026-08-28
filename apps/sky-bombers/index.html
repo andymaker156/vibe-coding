@@ -686,15 +686,28 @@ function simulate(dt) {
 /* ---------------------------------------------------------------- netcode */
 // UDP first, then TURN over TCP, then TURN over TLS/443 -- the last one looks
 // like ordinary HTTPS and is what survives hotel and corporate networks.
+// STUN only discovers your public address; it cannot relay. When the two
+// devices cannot reach each other directly -- guest wifi with client isolation,
+// most cellular carriers -- a TURN relay is the only thing that works.
+//
+// Open Relay's old public credentials no longer issue allocations: probing
+// turn:openrelay.metered.ca returns "400 TURN allocate error", and their docs
+// now require a free account whose API key mints iceServers. So there is no
+// working no-account relay to point at, and pretending otherwise just produces
+// a silent failure.
+//
+// To enable relaying, paste the iceServers your provider gives you here.
+const TURN_SERVERS = [
+  // { urls: "turn:...:443?transport=tcp", username: "...", credential: "..." },
+  // { urls: "turns:...:443?transport=tcp", username: "...", credential: "..." }
+];
+const hasRelay = TURN_SERVERS.length > 0;
+
 const ICE = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun.cloudflare.com:3478" },
-  { urls: "turn:openrelay.metered.ca:80", username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turn:openrelay.metered.ca:443", username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turn:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" },
-  { urls: "turns:openrelay.metered.ca:443?transport=tcp", username: "openrelayproject", credential: "openrelayproject" }
-];
+  { urls: "stun:stun.cloudflare.com:3478" }
+].concat(TURN_SERVERS);
 const rtcConfig = (relayOnly) => ({
   iceServers: ICE,
   iceTransportPolicy: relayOnly ? "relay" : "all",
@@ -818,15 +831,18 @@ function becomeGuest(room, hostIfEmpty) {
   // Retry through TURN only before giving up -- that path looks like HTTPS.
   clearTimeout(joinWatchdog); clearTimeout(relayRetry);
   relayRetry = setTimeout(() => {
-    if (me.isHost || (hostConn && hostConn.open) || usingRelayOnly) return;
+    if (me.isHost || (hostConn && hostConn.open) || usingRelayOnly || !hasRelay) return;
     log("direct path failed — retrying through TURN relay");
     usingRelayOnly = true;
     becomeGuest(room, false);
   }, 7000);
   joinWatchdog = setTimeout(() => {
     if (me.isHost || (hostConn && hostConn.open)) return;
-    showErr("Could not open a peer link to room " + room + " even through a relay. " +
-            "Both devices on the same wifi is the best bet; some mobile networks block this.", true);
+    showErr(hasRelay
+      ? "Could not open a peer link to room " + room + " even through a relay."
+      : "This network blocks direct device-to-device connections, and no TURN relay " +
+        "is configured — so there is no route left. Guest and office wifi usually block " +
+        "this (client isolation); a home network normally works.", true);
   }, 16000);
 
   paintRoom();
@@ -1392,6 +1408,7 @@ function paintDiag() {
     `<div>link <b>${c.link}</b></div>` +
     `<div>ice <b>${c.ice}</b></div>` +
     `<div>via <b>${iceKind}${usingRelayOnly ? " (relay-only)" : ""}</b></div>` +
+    `<div>relay <b>${hasRelay ? "configured" : "none"}</b></div>` +
     (local ? `<span class="warn">⚠ This URL only works on this computer — a phone cannot reach it. Open the deployed page instead.</span>` : "") +
     (netErr ? `<span class="warn">${netErr}</span>` : "");
 }
