@@ -1,0 +1,766 @@
+<!-- new-app -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bomber Arena</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page:  #0e1320;
+    --panel: #151d30;
+    --rule:  #24304a;
+    --ink:   #eef3ff;
+    --ink-2: #9fb0d0;
+    --muted: #68789a;
+    --p1:    #3ddbd9;
+    --p2:    #ffb454;
+    --bot:   #f2668b;
+    --bot2:  #9d7cf5;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, "Cascadia Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 13px/1.5 var(--mono);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; padding: 20px 14px 34px;
+    -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent;
+  }
+  .bar { width: 100%; max-width: 640px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { margin: 0; font: 600 14px/1.2 var(--mono); letter-spacing: 0.16em; text-transform: uppercase; }
+  .bar .hint { color: var(--muted); font-size: 11.5px; flex: 1 1 180px; }
+  .modes { display: flex; gap: 5px; }
+  .modes button, .ctl {
+    border: 1px solid var(--rule); background: var(--panel); color: var(--ink-2);
+    border-radius: 999px; padding: 4px 10px; font: 11px var(--mono); cursor: pointer;
+  }
+  .modes button[aria-pressed="true"] { background: var(--ink); color: var(--page); border-color: var(--ink); }
+  .modes button:hover, .ctl:hover { border-color: var(--muted); }
+
+  .hud {
+    width: 100%; max-width: 640px; display: flex; gap: 8px; flex-wrap: wrap;
+  }
+  .tag {
+    display: flex; align-items: center; gap: 6px;
+    border: 1px solid var(--rule); background: var(--panel);
+    border-radius: 9px; padding: 5px 9px; font-size: 11px;
+  }
+  .tag .sw { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+  .tag.dead { opacity: 0.42; text-decoration: line-through; }
+  .tag b { color: var(--ink); font-weight: 600; }
+
+  .stage {
+    position: relative; width: 100%; max-width: 640px;
+    border: 1px solid var(--rule); border-radius: 12px; overflow: hidden;
+    background: #0a0e18; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+  }
+  canvas { display: block; width: 100%; height: auto; image-rendering: auto; }
+
+  .overlay {
+    position: absolute; inset: 0; display: grid; place-content: center; gap: 8px;
+    text-align: center; padding: 20px; background: rgba(10, 14, 24, 0.86);
+  }
+  .overlay[hidden] { display: none; }
+  .overlay .big { font: 600 20px/1.25 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+  .overlay .sub { color: var(--ink-2); font-size: 12.5px; max-width: 420px; }
+  .overlay .keys { color: var(--muted); font-size: 11px; }
+  kbd {
+    display: inline-block; padding: 1px 5px; border-radius: 4px;
+    border: 1px solid var(--rule); background: var(--panel); color: var(--ink-2); font: 10.5px var(--mono);
+  }
+
+  /* touch pad: only where there is no keyboard */
+  .pad { display: none; width: 100%; max-width: 640px; gap: 10px; justify-content: space-between; }
+  @media (pointer: coarse) { .pad { display: flex; } }
+  .dpad { display: grid; grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(3, 46px); gap: 4px; }
+  .dpad button, .bombkey {
+    border: 1px solid var(--rule); background: var(--panel); color: var(--ink);
+    border-radius: 10px; font: 15px var(--mono); cursor: pointer; touch-action: none;
+  }
+  .dpad button:active, .bombkey:active { background: var(--rule); }
+  .dpad .sp { visibility: hidden; }
+  .bombkey { width: 92px; height: 92px; align-self: center; font-size: 12px; letter-spacing: 0.08em; }
+  footer { color: var(--muted); font-size: 11px; max-width: 640px; width: 100%; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <h1>Bomber Arena</h1>
+    <div class="hint">Blow up the bricks, corner the others, don't stand in your own blast.</div>
+    <div class="modes" id="modes">
+      <button type="button" data-mode="solo" aria-pressed="true">1P vs 3 bots</button>
+      <button type="button" data-mode="duo">2P vs 2 bots</button>
+    </div>
+  </div>
+
+  <div class="hud" id="hud"></div>
+
+  <div class="stage">
+    <canvas id="c" width="480" height="352" aria-label="Bomber Arena game board"></canvas>
+    <div class="overlay" id="overlay">
+      <div class="big" id="ovTitle">Bomber Arena</div>
+      <div class="sub" id="ovSub">Last one standing wins. Bricks hide power-ups: extra bombs, longer blast, more speed.</div>
+      <div class="keys" id="ovKeys">
+        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>space</kbd> bomb · <kbd>R</kbd> restart
+      </div>
+      <div class="keys">press any key or tap to start</div>
+    </div>
+  </div>
+
+  <div class="pad">
+    <div class="dpad">
+      <button class="sp"></button><button data-dir="up" type="button">↑</button><button class="sp"></button>
+      <button data-dir="left" type="button">←</button><button class="sp"></button><button data-dir="right" type="button">→</button>
+      <button class="sp"></button><button data-dir="down" type="button">↓</button><button class="sp"></button>
+    </div>
+    <button class="bombkey" data-bomb="1" type="button">BOMB</button>
+  </div>
+
+  <footer id="foot">One file, no dependencies, no server — the opponents are bots, not other people.</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---- board ---------------------------------------------------------------
+  const COLS = 15, ROWS = 11, TILE = 32;
+  const EMPTY = 0, SOLID = 1, BRICK = 2;
+  const FUSE = 2.1, FLAME_LIFE = 0.42, BASE_SPEED = 84;
+  const SPAWNS = [
+    { c: 1, r: 1 }, { c: COLS - 2, r: ROWS - 2 },
+    { c: COLS - 2, r: 1 }, { c: 1, r: ROWS - 2 }
+  ];
+  const POWERS = ["bomb", "fire", "speed"];
+
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+  const $ = (id) => document.getElementById(id);
+
+  const idx = (c, r) => r * COLS + c;
+  const inside = (c, r) => c >= 0 && r >= 0 && c < COLS && r < ROWS;
+  const center = (n) => n * TILE + TILE / 2;
+  const tileOf = (px) => Math.floor(px / TILE);
+
+  const G = {
+    mode: "solo", phase: "title",       // title | play | done
+    grid: [], items: [], bombs: [], flames: [], players: [],
+    t: 0, rng: 1, deaths: []
+  };
+
+  // Seedable RNG so #selftest runs are reproducible.
+  function rnd() {
+    G.rng = (G.rng * 1664525 + 1013904223) % 4294967296;
+    return G.rng / 4294967296;
+  }
+
+  function buildLevel() {
+    G.grid = new Array(COLS * ROWS).fill(EMPTY);
+    G.items = new Array(COLS * ROWS).fill(null);
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const edge = c === 0 || r === 0 || c === COLS - 1 || r === ROWS - 1;
+        const pillar = c % 2 === 0 && r % 2 === 0;
+        if (edge || pillar) G.grid[idx(c, r)] = SOLID;
+      }
+    }
+    // keep an L of clear tiles at each spawn so nobody starts walled in
+    const clear = new Set();
+    for (const s of SPAWNS) {
+      for (const [dc, dr] of [[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1]]) {
+        const c = s.c + dc, r = s.r + dr;
+        if (inside(c, r) && G.grid[idx(c, r)] !== SOLID) clear.add(idx(c, r));
+      }
+    }
+    for (let i = 0; i < G.grid.length; i++) {
+      if (G.grid[i] === EMPTY && !clear.has(i) && rnd() < 0.76) G.grid[i] = BRICK;
+    }
+  }
+
+  function makePlayer(i, isBot) {
+    const s = SPAWNS[i];
+    return {
+      id: i, isBot,
+      color: ["--p1", "--p2", "--bot", "--bot2"][i],
+      name: isBot ? "BOT " + i : "P" + (i + 1),
+      x: center(s.c), y: center(s.r), c: s.c, r: s.r,
+      dir: "down", moving: false, alive: true,
+      maxBombs: 1, live: 0, range: 2, speed: BASE_SPEED,
+      ignore: new Set(),   // bombs this body is still overlapping
+      think: 0, commit: 0, path: [], target: null, wobble: 0
+    };
+  }
+
+  function reset(mode) {
+    G.mode = mode || G.mode;
+    G.bombs = []; G.flames = []; G.t = 0; G.deaths = [];
+    buildLevel();
+    // seat order: P1, then either P2 or a bot, then bots
+    const humans = G.mode === "duo" ? 2 : 1;
+    G.players = [0, 1, 2, 3].map((i) => makePlayer(i, i >= humans));
+    // P2 sits at the opposite corner, so swap seats 1 and 2 in solo
+    if (humans === 1) {
+      const a = G.players[1], b = G.players[2];
+      a.color = "--bot"; a.name = "BOT 1";
+      b.color = "--bot2"; b.name = "BOT 2";
+      G.players[3].color = "--p2"; G.players[3].name = "BOT 3";
+    }
+    G.phase = "play";
+    $("overlay").hidden = true;
+    drawHud();
+  }
+
+  // ---- bombs, flames, danger ----------------------------------------------
+  function bombAt(c, r) { return G.bombs.find((b) => b.c === c && b.r === r); }
+
+  function placeBomb(p) {
+    if (!p.alive || p.live >= p.maxBombs) return false;
+    if (bombAt(p.c, p.r)) return false;
+    const b = { c: p.c, r: p.r, owner: p.id, timer: FUSE, range: p.range };
+    G.bombs.push(b);
+    p.live++;
+    p.ignore.add(b);          // walk off it freely; it blocks once we are clear
+    return true;
+  }
+
+  // Cells a bomb will cover, stopping at the first solid; a brick is hit but
+  // absorbs anything past it.
+  function blastCells(b) {
+    const out = [{ c: b.c, r: b.r }];
+    for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (let n = 1; n <= b.range; n++) {
+        const c = b.c + dc * n, r = b.r + dr * n;
+        if (!inside(c, r)) break;
+        const t = G.grid[idx(c, r)];
+        if (t === SOLID) break;
+        out.push({ c, r });
+        if (t === BRICK) break;
+      }
+    }
+    return out;
+  }
+
+  function detonate(b, chain) {
+    const i = G.bombs.indexOf(b);
+    if (i < 0) return;
+    G.bombs.splice(i, 1);
+    const owner = G.players[b.owner];
+    if (owner) owner.live = Math.max(0, owner.live - 1);
+
+    for (const cell of blastCells(b)) {
+      const j = idx(cell.c, cell.r);
+      if (G.grid[j] === BRICK) {
+        G.grid[j] = EMPTY;
+        if (rnd() < 0.32) G.items[j] = POWERS[(rnd() * POWERS.length) | 0];
+      }
+      G.flames.push({ c: cell.c, r: cell.r, timer: FLAME_LIFE, owner: b.owner });
+      const other = bombAt(cell.c, cell.r);
+      if (other && chain.indexOf(other) < 0) { chain.push(other); detonate(other, chain); }
+    }
+  }
+
+  // Time until each tile is on fire; Infinity where nothing is coming.
+  function dangerMap(extra) {
+    const d = new Array(COLS * ROWS).fill(Infinity);
+    const all = extra ? G.bombs.concat([extra]) : G.bombs;
+    for (const b of all) {
+      for (const cell of blastCells(b)) {
+        const j = idx(cell.c, cell.r);
+        d[j] = Math.min(d[j], b.timer);
+      }
+    }
+    for (const f of G.flames) d[idx(f.c, f.r)] = 0;
+    return d;
+  }
+
+  const walkable = (c, r) =>
+    inside(c, r) && G.grid[idx(c, r)] === EMPTY && !bombAt(c, r);
+
+  // BFS from a tile. `order` is nearest-first, so the first match found while
+  // scanning it is the closest one -- scanning by array index instead picks
+  // whatever sits highest on the board, which is how a bot talks itself into a
+  // five-tile sprint it cannot finish before the fuse ends.
+  function flood(sc, sr, blocked) {
+    const prev = new Array(COLS * ROWS).fill(-1);
+    const dist = new Array(COLS * ROWS).fill(-1);
+    const seen = new Array(COLS * ROWS).fill(false);
+    const order = [idx(sc, sr)];
+    const q = [[sc, sr]];
+    seen[idx(sc, sr)] = true;
+    dist[idx(sc, sr)] = 0;
+    let head = 0;
+    while (head < q.length) {
+      const [c, r] = q[head++];
+      const dHere = dist[idx(c, r)];
+      for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nc = c + dc, nr = r + dr;
+        if (!inside(nc, nr)) continue;
+        const j = idx(nc, nr);
+        if (seen[j]) continue;
+        if (G.grid[j] !== EMPTY || bombAt(nc, nr)) continue;
+        if (blocked && blocked(nc, nr, j, dHere + 1)) continue;
+        seen[j] = true; prev[j] = idx(c, r); dist[j] = dHere + 1;
+        order.push(j);
+        q.push([nc, nr]);
+      }
+    }
+    return { prev, seen, dist, order };
+  }
+
+  // Route to the nearest tile nothing is going to burn. A tile is enterable if
+  // we get through it before its flame arrives, so a bot can run *through* a
+  // blast that has not gone off yet instead of declaring itself trapped.
+  function fleePath(p, d) {
+    const secPerTile = TILE / p.speed;
+    // skip a tile if its flame lands before we would be clear of it
+    const tooLate = (c, r, j, steps) => d[j] <= steps * secPerTile + 0.18;
+    const { prev, dist, order } = flood(p.c, p.r, tooLate);
+    for (const j of order) {
+      if (d[j] !== Infinity) continue;
+      const path = pathTo(p.c, p.r, prev, j % COLS, (j / COLS) | 0);
+      if (path.length) return { path, secs: dist[j] * secPerTile };
+      if (dist[j] === 0) return { path: [], secs: 0 };   // already safe
+    }
+    return null;
+  }
+
+  function pathTo(sc, sr, prev, tc, tr) {
+    const out = [];
+    let j = idx(tc, tr);
+    const start = idx(sc, sr);
+    while (j !== start && j >= 0) {
+      out.push({ c: j % COLS, r: (j / COLS) | 0 });
+      j = prev[j];
+      if (j < 0) return [];
+    }
+    return out.reverse();
+  }
+
+  // ---- bot ----------------------------------------------------------------
+  function botThink(p) {
+    const d = dangerMap();
+    const here = d[idx(p.c, p.r)];
+
+    // 1. standing somewhere that is about to burn -> run, and commit to it
+    if (here < Infinity) {
+      const flee = fleePath(p, d);
+      if (flee && flee.path.length) { p.path = flee.path; p.commit = 0.5; return; }
+      if (flee) { p.path = []; return; }
+    }
+
+    // 2. worth bombing? adjacent brick, or a rival in line of blast
+    const adjacentBrick = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dc, dr]) => {
+      const c = p.c + dc, r = p.r + dr;
+      return inside(c, r) && G.grid[idx(c, r)] === BRICK;
+    });
+    const rivalNear = G.players.some((q) =>
+      q.alive && q.id !== p.id &&
+      ((q.c === p.c && Math.abs(q.r - p.r) <= p.range) ||
+       (q.r === p.r && Math.abs(q.c - p.c) <= p.range)));
+
+    if ((adjacentBrick || rivalNear) && p.live < p.maxBombs && !bombAt(p.c, p.r)) {
+      const hypo = { c: p.c, r: p.r, timer: FUSE, range: p.range };
+      const escape = fleePath(p, dangerMap(hypo));
+      // only light the fuse if the exit is reachable with room to spare
+      if (escape && escape.path.length && escape.secs < FUSE * 0.62) {
+        placeBomb(p);
+        p.path = escape.path;
+        p.commit = 0.6;
+        return;
+      }
+    }
+
+    // 3. otherwise head for the nearest brick to break, or a rival
+    const { prev, seen } = flood(p.c, p.r, (c, r, j) => d[j] < 0.6);
+    let goal = null, goalLen = 1e9;
+    for (let j = 0; j < seen.length; j++) {
+      if (!seen[j]) continue;
+      const c = j % COLS, r = (j / COLS) | 0;
+      const nextToBrick = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dc, dr]) =>
+        inside(c + dc, r + dr) && G.grid[idx(c + dc, r + dr)] === BRICK);
+      const onItem = G.items[j] !== null;
+      const rival = G.players.some((q) => q.alive && q.id !== p.id && q.c === c && q.r === r);
+      if (!nextToBrick && !onItem && !rival) continue;
+      const path = pathTo(p.c, p.r, prev, c, r);
+      const len = path.length + (onItem ? -2 : 0);
+      if (path.length && len < goalLen) { goalLen = len; goal = path; }
+    }
+    if (goal) { p.path = goal; return; }
+
+    // 4. nothing to do -- shuffle so bots never freeze in a corner
+    const opts = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+      .map(([dc, dr]) => ({ c: p.c + dc, r: p.r + dr }))
+      .filter((n) => walkable(n.c, n.r) && d[idx(n.c, n.r)] === Infinity);
+    p.path = opts.length ? [opts[(rnd() * opts.length) | 0]] : [];
+  }
+
+  // ---- movement -----------------------------------------------------------
+  const HALF = 11;   // body half-width; smaller than TILE/2 so gaps are forgiving
+
+  function blockedAt(p, x, y) {
+    for (const [ox, oy] of [[-HALF, -HALF], [HALF, -HALF], [-HALF, HALF], [HALF, HALF]]) {
+      const c = tileOf(x + ox), r = tileOf(y + oy);
+      if (!inside(c, r)) return true;
+      if (G.grid[idx(c, r)] !== EMPTY) return true;
+      const b = bombAt(c, r);
+      if (b && !p.ignore.has(b)) return true;
+    }
+    return false;
+  }
+
+  function moveBy(p, dx, dy, dt) {
+    const step = p.speed * dt;
+    if (dx) {
+      const nx = p.x + Math.sign(dx) * step;
+      if (!blockedAt(p, nx, p.y)) p.x = nx;
+      else {
+        // nudge onto the row centre so a near-miss slides into the gap
+        const cy = center(p.r);
+        if (Math.abs(cy - p.y) > 1) p.y += Math.sign(cy - p.y) * Math.min(step, Math.abs(cy - p.y));
+      }
+    }
+    if (dy) {
+      const ny = p.y + Math.sign(dy) * step;
+      if (!blockedAt(p, p.x, ny)) p.y = ny;
+      else {
+        const cx = center(p.c);
+        if (Math.abs(cx - p.x) > 1) p.x += Math.sign(cx - p.x) * Math.min(step, Math.abs(cx - p.x));
+      }
+    }
+    p.c = tileOf(p.x); p.r = tileOf(p.y);
+    for (const b of Array.from(p.ignore)) {
+      const clearOf = Math.abs(p.x - center(b.c)) >= HALF + TILE / 2 ||
+                      Math.abs(p.y - center(b.r)) >= HALF + TILE / 2;
+      if (clearOf || G.bombs.indexOf(b) < 0) p.ignore.delete(b);
+    }
+    if (dx || dy) p.wobble += step * 0.09;
+  }
+
+  function stepBot(p, dt) {
+    p.think -= dt;
+    p.commit = Math.max(0, (p.commit || 0) - dt);
+    // while committed, walk the route already chosen -- re-planning mid-escape
+    // is how a bot dithers on top of its own bomb
+    const locked = p.commit > 0 && p.path.length;
+    if (!locked && (p.think <= 0 || !p.path.length)) { botThink(p); p.think = 0.12; }
+    const nextTile = p.path[0];
+    if (!nextTile) return;
+    const tx = center(nextTile.c), ty = center(nextTile.r);
+    const dx = tx - p.x, dy = ty - p.y;
+    if (Math.abs(dx) < 2 && Math.abs(dy) < 2) { p.x = tx; p.y = ty; p.path.shift(); }
+    else moveBy(p, Math.abs(dx) > 1 ? dx : 0, Math.abs(dx) > 1 ? 0 : dy, dt);
+    if (Math.abs(dx) > 1) p.dir = dx > 0 ? "right" : "left";
+    else if (Math.abs(dy) > 1) p.dir = dy > 0 ? "down" : "up";
+    p.c = tileOf(p.x); p.r = tileOf(p.y);
+  }
+
+  // ---- input --------------------------------------------------------------
+  const keys = new Set();
+  const SCHEME = [
+    { up: "KeyW", down: "KeyS", left: "KeyA", right: "KeyD", bomb: "Space" },
+    { up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", bomb: "Enter" }
+  ];
+  const touch = { up: false, down: false, left: false, right: false };
+
+  function humanInput(p, dt) {
+    const k = SCHEME[p.id] || SCHEME[0];
+    let dx = 0, dy = 0;
+    const L = keys.has(k.left) || (p.id === 0 && touch.left);
+    const R = keys.has(k.right) || (p.id === 0 && touch.right);
+    const U = keys.has(k.up) || (p.id === 0 && touch.up);
+    const D = keys.has(k.down) || (p.id === 0 && touch.down);
+    if (L) dx = -1; else if (R) dx = 1;
+    if (U) dy = -1; else if (D) dy = 1;
+    if (dx && dy) dy = 0;                       // no diagonals; grid game
+    if (dx) p.dir = dx > 0 ? "right" : "left";
+    else if (dy) p.dir = dy > 0 ? "down" : "up";
+    if (dx || dy) moveBy(p, dx, dy, dt);
+  }
+
+  addEventListener("keydown", (e) => {
+    if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
+    if (G.phase !== "play") {
+      if (e.code === "KeyR" || G.phase === "title" || G.phase === "done") { reset(); return; }
+    }
+    if (keys.has(e.code)) return;
+    keys.add(e.code);
+    if (G.phase === "play") {
+      for (const p of G.players) {
+        if (p.isBot || !p.alive) continue;
+        const k = SCHEME[p.id] || SCHEME[0];
+        if (e.code === k.bomb) placeBomb(p);
+      }
+    }
+    if (e.code === "KeyR") reset();
+  });
+  addEventListener("keyup", (e) => keys.delete(e.code));
+  addEventListener("blur", () => keys.clear());
+
+  for (const btn of document.querySelectorAll(".dpad [data-dir]")) {
+    const dir = btn.dataset.dir;
+    const on = (v) => (ev) => { ev.preventDefault(); touch[dir] = v; if (v && G.phase !== "play") reset(); };
+    btn.addEventListener("pointerdown", on(true));
+    btn.addEventListener("pointerup", on(false));
+    btn.addEventListener("pointerleave", on(false));
+    btn.addEventListener("pointercancel", on(false));
+  }
+  document.querySelector("[data-bomb]").addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    if (G.phase !== "play") { reset(); return; }
+    const me = G.players[0];
+    if (me && me.alive) placeBomb(me);
+  });
+  document.querySelector(".stage").addEventListener("pointerdown", () => {
+    if (G.phase !== "play") reset();
+  });
+  $("modes").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-mode]");
+    if (!b) return;
+    for (const x of $("modes").children) x.setAttribute("aria-pressed", String(x === b));
+    $("ovKeys").innerHTML = b.dataset.mode === "duo"
+      ? '<kbd>WASD</kbd>+<kbd>space</kbd> · <kbd>arrows</kbd>+<kbd>enter</kbd> · <kbd>R</kbd> restart'
+      : '<kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>space</kbd> bomb · <kbd>R</kbd> restart';
+    reset(b.dataset.mode);
+  });
+
+  // ---- simulation ---------------------------------------------------------
+  function step(dt) {
+    G.t += dt;
+    if (G.phase !== "play") return;
+
+    for (const p of G.players) {
+      if (!p.alive) continue;
+      if (p.isBot) stepBot(p, dt); else humanInput(p, dt);
+      const j = idx(p.c, p.r);
+      const item = G.items[j];
+      if (item) {
+        G.items[j] = null;
+        if (item === "bomb") p.maxBombs = Math.min(6, p.maxBombs + 1);
+        else if (item === "fire") p.range = Math.min(7, p.range + 1);
+        else p.speed = Math.min(150, p.speed + 16);
+        drawHud();
+      }
+    }
+
+    for (const b of G.bombs.slice()) {
+      b.timer -= dt;
+      if (b.timer <= 0) detonate(b, [b]);
+    }
+    for (const f of G.flames) f.timer -= dt;
+    G.flames = G.flames.filter((f) => f.timer > 0);
+
+    // deaths: any body overlapping a burning tile
+    let changed = false;
+    for (const p of G.players) {
+      if (!p.alive) continue;
+      const hit = G.flames.find((f) =>
+        Math.abs(center(f.c) - p.x) < HALF + TILE / 2 - 4 &&
+        Math.abs(center(f.r) - p.y) < HALF + TILE / 2 - 4);
+      if (hit) {
+        p.alive = false; changed = true;
+        G.deaths.push({ id: p.id, t: +G.t.toFixed(2), self: hit.owner === p.id });
+      }
+    }
+    if (changed) { drawHud(); checkOver(); }
+  }
+
+  function checkOver() {
+    const live = G.players.filter((p) => p.alive);
+    const humansLeft = live.filter((p) => !p.isBot);
+    if (live.length > 1) return;
+    G.phase = "done";
+    const w = live[0];
+    $("ovTitle").textContent = w ? (w.isBot ? "Bots win" : w.name + " wins") : "Everyone died";
+    $("ovSub").textContent = w && !w.isBot
+      ? "Last one standing."
+      : humansLeft.length === 0 ? "Caught in a blast. Press R to run it again." : "Draw.";
+    $("overlay").hidden = false;
+  }
+
+  // ---- drawing ------------------------------------------------------------
+  function css(v) { return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+  let PAL = {};
+  function cachePalette() {
+    PAL = { p1: css("--p1"), p2: css("--p2"), bot: css("--bot"), bot2: css("--bot2"),
+            rule: css("--rule"), panel: css("--panel"), ink2: css("--ink-2") };
+  }
+
+  function draw() {
+    ctx.fillStyle = "#0a0e18";
+    ctx.fillRect(0, 0, COLS * TILE, ROWS * TILE);
+
+    for (let r = 0; r < ROWS; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const t = G.grid[idx(c, r)], x = c * TILE, y = r * TILE;
+        if (t === SOLID) {
+          ctx.fillStyle = "#243050";
+          rr(x + 1, y + 1, TILE - 2, TILE - 2, 5); ctx.fill();
+          ctx.fillStyle = "#2e3d64";
+          rr(x + 4, y + 4, TILE - 8, TILE - 12, 3); ctx.fill();
+        } else if (t === BRICK) {
+          ctx.fillStyle = "#6a4a6b";
+          rr(x + 2, y + 2, TILE - 4, TILE - 4, 4); ctx.fill();
+          ctx.strokeStyle = "#8a6790"; ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(x + 2, y + TILE / 2); ctx.lineTo(x + TILE - 2, y + TILE / 2);
+          ctx.moveTo(x + TILE / 2, y + 2); ctx.lineTo(x + TILE / 2, y + TILE / 2);
+          ctx.stroke();
+        } else if ((c + r) % 2 === 0) {
+          ctx.fillStyle = "#0d1322";
+          ctx.fillRect(x, y, TILE, TILE);
+        }
+        const it = G.items[idx(c, r)];
+        if (it) drawItem(it, x, y);
+      }
+    }
+
+    for (const b of G.bombs) drawBomb(b);
+    for (const f of G.flames) drawFlame(f);
+    for (const p of G.players) if (p.alive) drawGuy(p);
+  }
+
+  function drawItem(kind, x, y) {
+    const col = kind === "bomb" ? "#3ddbd9" : kind === "fire" ? "#ffb454" : "#9d7cf5";
+    ctx.fillStyle = col;
+    ctx.globalAlpha = 0.22;
+    rr(x + 5, y + 5, TILE - 10, TILE - 10, 6); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = col; ctx.lineWidth = 2;
+    rr(x + 5, y + 5, TILE - 10, TILE - 10, 6); ctx.stroke();
+    ctx.fillStyle = col;
+    ctx.font = "700 11px ui-monospace, monospace";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(kind === "bomb" ? "+B" : kind === "fire" ? "+F" : "+S", x + TILE / 2, y + TILE / 2 + 1);
+    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  }
+
+  function drawBomb(b) {
+    const x = center(b.c), y = center(b.r);
+    const pulse = 1 + Math.sin((FUSE - b.timer) * 14) * 0.09;
+    const rad = 10 * pulse;
+    ctx.fillStyle = "#101726";
+    ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = b.timer < 0.6 ? "#f2668b" : "#48597f";
+    ctx.lineWidth = 2; ctx.stroke();
+    ctx.strokeStyle = "#ffb454"; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + rad * 0.5, y - rad * 0.7);
+    ctx.quadraticCurveTo(x + rad * 1.3, y - rad * 1.6, x + rad * 0.4, y - rad * 1.9);
+    ctx.stroke();
+  }
+
+  function drawFlame(f) {
+    const x = f.c * TILE, y = f.r * TILE;
+    const k = f.timer / FLAME_LIFE;
+    ctx.globalAlpha = 0.35 + 0.65 * k;
+    const g = ctx.createRadialGradient(x + TILE / 2, y + TILE / 2, 2, x + TILE / 2, y + TILE / 2, TILE * 0.7);
+    g.addColorStop(0, "#fff3d0"); g.addColorStop(0.45, "#ffb454"); g.addColorStop(1, "#f2668b");
+    ctx.fillStyle = g;
+    const inset = (1 - k) * 5;
+    rr(x + inset, y + inset, TILE - inset * 2, TILE - inset * 2, 6); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawGuy(p) {
+    const col = PAL[p.color.replace("--", "").replace("-", "")] || css(p.color);
+    const bob = Math.sin(p.wobble) * 1.6;
+    const x = p.x, y = p.y + bob;
+
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.beginPath(); ctx.ellipse(p.x, p.y + 11, 9, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+
+    ctx.fillStyle = col;
+    rr(x - 10, y - 12, 20, 22, 7); ctx.fill();
+
+    // visor points where you are heading, so you can read direction at a glance
+    ctx.fillStyle = "#0a0e18";
+    const vw = 11, vh = 6;
+    let vx = x - vw / 2, vy = y - 6;
+    if (p.dir === "left") vx -= 3; else if (p.dir === "right") vx += 3;
+    else if (p.dir === "up") vy -= 3; else vy += 2;
+    rr(vx, vy, vw, vh, 2.5); ctx.fill();
+    ctx.fillStyle = col;
+    ctx.fillRect(vx + (p.dir === "left" ? 1 : vw - 3), vy + 2, 2, 2);
+  }
+
+  function rr(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  function drawHud() {
+    $("hud").innerHTML = G.players.map((p) => {
+      const col = css(p.color);
+      return `<span class="tag${p.alive ? "" : " dead"}">` +
+        `<span class="sw" style="background:${col}"></span>${p.name}` +
+        ` <b>${p.maxBombs}</b>b <b>${p.range}</b>f</span>`;
+    }).join("");
+  }
+
+  // ---- loop ---------------------------------------------------------------
+  function fit() {
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    canvas.width = COLS * TILE * dpr;
+    canvas.height = ROWS * TILE * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  let last = 0;
+  function frame(ts) {
+    const dt = Math.min(0.04, last ? (ts - last) / 1000 : 0.016);
+    last = ts;
+    step(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  cachePalette();
+  fit();
+  buildLevel();
+  G.players = [0, 1, 2, 3].map((i) => makePlayer(i, i > 0));
+  drawHud();
+  addEventListener("resize", () => { fit(); });
+  requestAnimationFrame(frame);
+
+  // Headless check: four bots play themselves, so the AI, chain reactions and
+  // win condition all get exercised without a keyboard.
+  if (location.hash === "#selftest") {
+    const rounds = [];
+    for (let n = 0; n < 5; n++) {
+      G.rng = 7 + n * 101;
+      reset("solo");
+      for (const p of G.players) p.isBot = true;
+      const bricks0 = G.grid.filter((t) => t === BRICK).length;
+      let frames = 0;
+      while (G.phase === "play" && frames < 5400) { step(1 / 60); frames++; }
+      const bricks1 = G.grid.filter((t) => t === BRICK).length;
+      rounds.push({
+        secs: +(frames / 60).toFixed(1),
+        ended: G.phase === "done",
+        alive: G.players.filter((p) => p.alive).length,
+        broke: bricks0 - bricks1,
+        items: G.items.filter(Boolean).length,
+        selfKills: G.deaths.filter((x) => x.self).length,
+        deaths: G.deaths.map((x) => `${x.id}${x.self ? "self" : ""}@${x.t}`).join(",")
+      });
+    }
+    const ended = rounds.filter((r) => r.ended).length;
+    console.log("[bomber-arena] selftest rounds: " +
+      rounds.map((r) => `${r.secs}s alive=${r.alive} bricks=${r.broke} selfkills=${r.selfKills} [${r.deaths}]`).join(" | "));
+    console.log(`[bomber-arena] ${ended}/${rounds.length} rounds resolved, ` +
+      `avg bricks broken ${(rounds.reduce((s, r) => s + r.broke, 0) / rounds.length).toFixed(0)}`);
+    if (!ended) console.error("[bomber-arena] selftest: no round ever resolved");
+    if (rounds.some((r) => r.broke === 0)) console.error("[bomber-arena] selftest: a round broke zero bricks — bots not bombing");
+  }
+  console.log("[bomber-arena] ready");
+})();
+</script>
+</body>
+</html>
