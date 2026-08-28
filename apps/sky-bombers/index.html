@@ -714,6 +714,8 @@ const rtcConfig = (relayOnly) => ({
   iceCandidatePoolSize: 2
 });
 
+// ?peerdebug=1 turns on PeerJS's own protocol logging
+const PEER_DEBUG = new URLSearchParams(location.search).has("peerdebug") ? 3 : 0;
 let peer = null, hostConn = null, joinWatchdog = 0, relayRetry = 0;
 let iceKind = "—", usingRelayOnly = false;
 const guests = new Map();          // peerId -> {id, name, color, look, slot, conn}
@@ -745,7 +747,7 @@ function goOnline(room) {
   if (peer) { try { peer.destroy(); } catch (_) {} }
   guests.clear(); hostConn = null;
   // First claim on the room id becomes host; a taken id means the room exists.
-  peer = new Peer(peerIdFor(room), { debug: 0, config: rtcConfig(false) });
+  peer = new Peer(peerIdFor(room), { debug: PEER_DEBUG, config: rtcConfig(false) });
 
   peer.on("open", () => {
     me.isHost = true;
@@ -790,7 +792,7 @@ function becomeGuest(room, hostIfEmpty) {
   me.isHost = false;
   clearTimeout(joinWatchdog);
   if (peer) { try { peer.destroy(); } catch (_) {} }
-  peer = new Peer({ debug: 0, config: rtcConfig(usingRelayOnly) });
+  peer = new Peer({ debug: PEER_DEBUG, config: rtcConfig(usingRelayOnly) });
   peer.on("open", () => {
     const conn = peer.connect(peerIdFor(room), { reliable: true });
     hostConn = conn;
@@ -1578,6 +1580,26 @@ paintRoom();          // the lobby shows the room code before you enter
 buildLevel();
 seatRoster();
 syncTiles();
+// Debug hook: lets a harness (or you, from the console) read the exact
+// connection state of a tab without relying on console scraping.
+window.__sb = () => ({
+  role: me.isHost ? "host" : "guest",
+  room: me.room, slot: me.slot,
+  peerId: peer ? peer.id : null,
+  peerOpen: !!(peer && peer.open),
+  peerDestroyed: !!(peer && peer.destroyed),
+  hasConn: !!hostConn,
+  connOpen: !!(hostConn && hostConn.open),
+  connPeer: hostConn ? hostConn.peer : null,
+  pcState: hostConn && hostConn.peerConnection ? hostConn.peerConnection.iceConnectionState : null,
+  sigState: hostConn && hostConn.peerConnection ? hostConn.peerConnection.signalingState : null,
+  peerDisconnected: !!(peer && peer.disconnected),
+  guests: guests.size,
+  ice: iceKind,
+  synced: S.synced, phase: S.phase, players: S.players.length,
+  err: netErr, log: logLines.slice(-14)
+});
+
 setInterval(paintDiag, 500);
 requestAnimationFrame(frame);
 console.log("[sky-bombers] ready · three " + THREE.REVISION + " · room " + me.room +
