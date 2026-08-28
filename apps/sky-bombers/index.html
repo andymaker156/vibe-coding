@@ -309,8 +309,12 @@ const S = {
   phase: "lobby",           // lobby | count | play | over
   timer: 0, round: 0,
   grid: [], items: [], bombs: [], flames: [], players: [],
-  gridDirty: true, rosterDirty: true
+  gridDirty: true, renderDirty: true, rosterDirty: true, synced: false
 };
+
+// the snapshot and the renderer both consume 'the grid changed'; one flag
+// meant whichever ran first stole it, leaving the host drawing dead bricks
+function dirty() { S.gridDirty = true; S.renderDirty = true; }
 
 const me = {
   name: "", color: 0, look: 0, slot: 0,
@@ -340,7 +344,7 @@ function buildLevel() {
   for (let i = 0; i < S.grid.length; i++) {
     if (S.grid[i] === EMPTY && !keep.has(i) && rnd() < 0.74) S.grid[i] = BRICK;
   }
-  S.gridDirty = true;
+  dirty();
 }
 
 function makePlayer(slot, opt) {
@@ -363,6 +367,7 @@ function seatRoster() {
   const prev = new Map(S.players.map((p) => [p.slot, p]));
   const want = [{ name: me.name, color: me.color, look: me.look, peer: null, isBot: false }];
   for (const g of guests.values()) {
+    if (g.pending) { g.slot = -1; continue; }
     if (want.length >= 4) break;
     g.slot = want.length;
     want.push({ name: g.name, color: g.color, look: g.look, peer: g.id, isBot: false });
@@ -387,7 +392,21 @@ function seatRoster() {
   S.rosterDirty = true;
 }
 
+function announceSeats() {
+  for (const g of guests.values()) {
+    if (g.conn && g.conn.open) {
+      try { g.conn.send({ t: "welcome", slot: g.slot, room: me.room, spectating: g.slot < 0 }); } catch (_) {}
+    }
+  }
+}
+
 function startRound() {
+  // everyone who was watching gets a seat for this one
+  if (me.isHost) {
+    let promoted = false;
+    for (const g of guests.values()) if (g.pending) { g.pending = false; promoted = true; }
+    if (promoted) { seatRoster(); announceSeats(); }
+  }
   buildLevel();
   const keepScores = S.players.map((p) => ({ wins: p.wins, kills: p.kills, deaths: p.deaths }));
   for (let i = 0; i < S.players.length; i++) {
@@ -441,7 +460,7 @@ function detonate(b, chain) {
     const j = idx(cell.c, cell.r);
     if (S.grid[j] === BRICK) {
       S.grid[j] = EMPTY;
-      S.gridDirty = true;
+      dirty();
       if (rnd() < 0.34) S.items[j] = POWERS[(rnd() * POWERS.length) | 0];
     }
     S.flames.push({ c: cell.c, r: cell.r, timer: FLAME_LIFE, owner: b.owner });
@@ -629,7 +648,7 @@ function simulate(dt) {
     const j = idx(p.c, p.r);
     const item = S.items[j];
     if (item) {
-      S.items[j] = null; S.gridDirty = true;
+      S.items[j] = null; dirty();
       if (item === "bomb") p.maxBombs = Math.min(6, p.maxBombs + 1);
       else if (item === "fire") p.range = Math.min(7, p.range + 1);
       else p.speed = Math.min(4.6, p.speed + 0.45);
@@ -783,14 +802,19 @@ function becomeGuest(room, hostIfEmpty) {
 function onHostData(conn, m) {
   if (!m || !m.t) return;
   if (m.t === "hello") {
+    // Dropping someone into a round already in progress is unfair and churns
+    // the seats. Watch the rest of this round, play the next one.
+    const midRound = S.phase === "play" || S.phase === "count";
     guests.set(conn.peer, {
       id: conn.peer, conn, name: String(m.name || "Player").slice(0, 14),
-      color: (m.color | 0) % COLORS.length, look: (m.look | 0) % LOOKS.length, slot: -1
+      color: (m.color | 0) % COLORS.length, look: (m.look | 0) % LOOKS.length,
+      slot: -1, pending: midRound
     });
     seatRoster();
-    conn.send({ t: "welcome", slot: guests.get(conn.peer).slot, room: me.room });
+    conn.send({ t: "welcome", slot: guests.get(conn.peer).slot, room: me.room, spectating: midRound });
+    conn.send(snapshot(true));        // whole world, immediately
     paintRoom();
-    log("guest joined: " + m.name);
+    log("guest joined: " + m.name + (midRound ? " (watching until next round)" : ""));
   } else if (m.t === "in") {
     const g = guests.get(conn.peer);
     if (!g) return;
@@ -804,7 +828,7 @@ function onHostData(conn, m) {
 
 function onGuestData(m) {
   if (!m || !m.t) return;
-  if (m.t === "welcome") { me.slot = m.slot; me.room = m.room; paintRoom(); }
+  if (m.t === "welcome") { me.slot = m.slot; me.room = m.room; me.spectating = !!m.spectating; paintRoom(); }
   else if (m.t === "full") showErr("That room is full (4 players).");
   else if (m.t === "s") applySnapshot(m);
 }
@@ -815,7 +839,7 @@ function broadcast(msg) {
   }
 }
 
-function snapshot() {
+function snapshot(full) {
   const m = {
     t: "s", ph: S.phase, tm: +S.timer.toFixed(2), rd: S.round, w: S.winner,
     p: S.players.map((p) => [p.slot, +p.x.toFixed(3), +p.z.toFixed(3), p.dir, p.alive ? 1 : 0,
@@ -823,17 +847,20 @@ function snapshot() {
     b: S.bombs.map((b) => [b.c, b.r, +b.timer.toFixed(2)]),
     f: S.flames.map((f) => [f.c, f.r, +f.timer.toFixed(2)])
   };
-  if (S.gridDirty) { m.g = S.grid.slice(); m.it = S.items.slice(); S.gridDirty = false; }
-  if (S.rosterDirty) {
+  // `full` is the join sync: without it a new guest never receives the map,
+  // because the grid only ships when it changes
+  if (full || S.gridDirty) { m.g = S.grid.slice(); m.it = S.items.slice(); if (!full) S.gridDirty = false; }
+  if (full || S.rosterDirty) {
     m.nm = S.players.map((p) => [p.slot, p.name, p.color, p.look, p.isBot ? 1 : 0]);
-    S.rosterDirty = false;
+    if (!full) S.rosterDirty = false;
   }
   return m;
 }
 
 function applySnapshot(m) {
   S.phase = m.ph; S.timer = m.tm; S.round = m.rd; S.winner = m.w;
-  if (m.g) { S.grid = m.g; S.items = m.it; S.gridDirty = true; }
+  if (m.g) { S.grid = m.g; S.items = m.it; S.renderDirty = true; }
+  S.synced = true;
   if (m.nm) {
     S.players = m.nm.map(([slot, name, color, look, isBot]) =>
       makePlayer(slot, { name, color, look, isBot: !!isBot }));
@@ -1326,7 +1353,9 @@ function paintHud() {
     ? `<span>💣 ${p.maxBombs}</span><span>🔥 ${p.range}</span><span>🏆 ${p.wins}</span>`
     : "spectating";
   $("statline2").textContent =
-    `Round ${S.round} · ${alive} alive` + (p && !p.alive ? " · you're out" : "");
+    `Round ${S.round} · ${alive} alive` +
+    (!p && S.synced && !me.isHost ? " · watching, you're in next round" : "") +
+    (p && !p.alive ? " · you're out" : "");
 }
 
 function paintBoard() {
@@ -1344,6 +1373,12 @@ function paintBoard() {
 
 function paintCenter() {
   const c = $("center");
+  if (!me.isHost && !S.synced && $("lobby").hidden) {   // not while still in the lobby
+    c.hidden = false;
+    $("big").textContent = "CONNECTING";
+    $("small").textContent = "Joining room " + me.room + " — " + connState().link;
+    return;
+  }
   if (S.phase === "count") {
     c.hidden = false;
     $("big").textContent = Math.ceil(S.timer) || "GO";
@@ -1439,7 +1474,7 @@ function frameBody(ts) {
     }
   }
 
-  if (S.gridDirty || tileMeshes.size === 0) { syncTiles(); S.gridDirty = false; }
+  if (S.renderDirty || tileMeshes.size === 0) { syncTiles(); S.renderDirty = false; }
   syncDynamics(t);
   syncAvatars();
   placeCamera(t, !$("lobby").hidden);
@@ -1482,7 +1517,14 @@ console.log("[sky-bombers] ready · three " + THREE.REVISION + " · room " + me.
   (roomFromUrl ? " (joining from link)" : ""));
 
 // A ?room= link means someone scanned the QR: join straight away.
-if (roomFromUrl) { showArena(); joinRoom(me.room); }
+if (roomFromUrl) {
+  // Do not show this device's own randomly generated board while joining --
+  // a motionless fake arena is indistinguishable from a broken page.
+  S.players = [];
+  S.synced = false;
+  showArena();
+  joinRoom(me.room);
+}
 
 /* Headless checks. #selftest runs bots against each other with no rendering
    dependency; #nettest is driven by the harness to prove two browsers really
@@ -1511,8 +1553,7 @@ if (location.hash.startsWith("#simnet")) {
   me.isHost = true; me.bots = 3; me.name = "HostBot";
   seatRoster(); startRound(); S.phase = "play";
   for (let i = 0; i < 240; i++) simulate(1 / 60);
-  S.gridDirty = true; S.rosterDirty = true;
-  const snap = snapshot();
+  const snap = snapshot(true);
   const want = {
     grid: S.grid.join(","), items: S.items.join(","),
     pos: S.players.map((p) => [p.slot, +p.x.toFixed(3), +p.z.toFixed(3), p.alive ? 1 : 0,
@@ -1540,6 +1581,34 @@ if (location.hash.startsWith("#simnet")) {
   console.log("[sky-bombers] simnet: snapshot " + JSON.stringify(snap).length + " bytes, " +
     S.players.length + " players, " + (bad.length ? "MISMATCH in " + bad.join(",") : "client matches host exactly"));
   for (const k of bad) console.error("[sky-bombers] simnet " + k + ": host=" + want[k] + " client=" + got[k]);
+}
+// Spectator promotion, checked without a network: someone arriving mid-round
+// must watch, then get a seat when the next round starts.
+if (location.hash.startsWith("#spectest")) {
+  rng = 77; me.isHost = true; me.bots = 3; me.name = "Host";
+  guests.clear();
+  seatRoster(); startRound(); S.phase = "play";
+  for (let i = 0; i < 120; i++) simulate(1 / 60);
+  const before = S.players.map((p) => p.name).join(",");
+  const scoresBefore = S.players.map((p) => p.wins + ":" + p.kills).join(",");
+  const posBefore = S.players.map((p) => p.x.toFixed(2)).join(",");
+
+  guests.set("fake-peer", { id: "fake-peer", conn: null, name: "Phone",
+                            color: 4, look: 2, slot: -1, pending: true });
+  seatRoster();
+  const seatedMid = S.players.some((p) => p.name === "Phone");
+  const posAfter = S.players.map((p) => p.x.toFixed(2)).join(",");
+  const scoresAfter = S.players.map((p) => p.wins + ":" + p.kills).join(",");
+
+  startRound();                       // next round promotes the watcher
+  const seatedNext = S.players.some((p) => p.name === "Phone");
+
+  const ok = !seatedMid && seatedNext && posAfter === posBefore && scoresAfter === scoresBefore;
+  console.log(`[sky-bombers] spectest: mid-round-seated=${seatedMid} (want false), ` +
+    `next-round-seated=${seatedNext} (want true), ` +
+    `positions-preserved=${posAfter === posBefore}, scores-preserved=${scoresAfter === scoresBefore} ` +
+    `=> ${ok ? "PASS" : "FAIL"}`);
+  if (!ok) console.error("[sky-bombers] spectest FAILED; roster was: " + before);
 }
 if (location.hash.startsWith("#nettest")) {
   const role = location.hash.includes("host") ? "host" : "guest";
