@@ -113,6 +113,12 @@
   #qr svg { width: 100%; height: auto; display: block; }
   #qrurl { margin-top: 7px; font: 10px var(--mono); color: var(--muted); word-break: break-all; }
   #qrfoot { margin-top: 8px; font-size: 10.5px; color: var(--muted); }
+  #diag {
+    margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--rule);
+    font: 10px var(--mono); color: var(--muted); text-align: left;
+  }
+  #diag b { color: var(--ink-2); font-weight: 600; float: right; }
+  #diag .warn { color: #ffd166; float: none; display: block; margin-top: 4px; }
   #copy { margin-top: 8px; width: 100%; padding: 6px; border-radius: 8px; font: 11.5px var(--sans);
           background: rgba(255,255,255,0.1); color: var(--ink); border: 1px solid var(--rule); }
   #keys {
@@ -234,6 +240,7 @@
     <div id="qrurl"></div>
     <button id="copy" type="button">Copy link</button>
     <div id="qrfoot">Same code = same arena.</div>
+    <div id="diag"></div>
   </div>
   <div id="keys">
     <span class="pill"><kbd>WASD</kbd> move</span>
@@ -349,22 +356,34 @@ function makePlayer(slot, opt) {
   };
 }
 
+// Reuse the existing player object for a seat that has not changed hands.
+// Rebuilding every seat on each join teleported everyone back to spawn and
+// wiped the scores the moment someone scanned the QR mid-round.
 function seatRoster() {
-  const list = [makePlayer(0, { name: me.name, color: me.color, look: me.look })];
+  const prev = new Map(S.players.map((p) => [p.slot, p]));
+  const want = [{ name: me.name, color: me.color, look: me.look, peer: null, isBot: false }];
   for (const g of guests.values()) {
-    if (list.length >= 4) break;
-    g.slot = list.length;
-    list.push(makePlayer(g.slot, { name: g.name, color: g.color, look: g.look, peer: g.id }));
+    if (want.length >= 4) break;
+    g.slot = want.length;
+    want.push({ name: g.name, color: g.color, look: g.look, peer: g.id, isBot: false });
   }
   let b = 0;
-  while (list.length < 4 && b < me.bots) {
-    list.push(makePlayer(list.length, {
-      name: BOTNAMES[(b + Math.floor(rnd() * 3)) % BOTNAMES.length], color: (list.length * 3) % COLORS.length,
-      look: list.length % LOOKS.length, isBot: true
-    }));
+  while (want.length < 4 && b < me.bots) {
+    want.push({
+      name: BOTNAMES[(want.length + b) % BOTNAMES.length],
+      color: (want.length * 3) % COLORS.length,
+      look: want.length % LOOKS.length, peer: null, isBot: true
+    });
     b++;
   }
-  S.players = list;
+  S.players = want.map((d, i) => {
+    const old = prev.get(i);
+    if (old && old.isBot === d.isBot && (old.peer || null) === (d.peer || null)) {
+      old.name = d.name; old.color = d.color; old.look = d.look;
+      return old;
+    }
+    return makePlayer(i, d);
+  });
   S.rosterDirty = true;
 }
 
@@ -646,7 +665,16 @@ function simulate(dt) {
 }
 
 /* ---------------------------------------------------------------- netcode */
-let peer = null, hostConn = null;
+const RTC = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" },
+    { urls: ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443"],
+      username: "openrelayproject", credential: "openrelayproject" }
+  ]
+};
+
+let peer = null, hostConn = null, joinWatchdog = 0;
 const guests = new Map();          // peerId -> {id, name, color, look, slot, conn}
 let netErr = "";
 
@@ -657,10 +685,18 @@ function randomRoom() {
 }
 const peerIdFor = (room) => "skyb-v1-" + room;
 
-function showErr(msg) {
+function showErr(msg, offerHost) {
   netErr = msg;
   $("err").hidden = !msg;
-  $("err").textContent = msg;
+  $("err").textContent = msg || "";
+  if (msg && offerHost) {
+    const b = document.createElement("button");
+    b.textContent = "Host room " + me.room + " here instead";
+    b.style.cssText = "margin-left:10px;padding:4px 10px;border-radius:8px;border:1px solid var(--rule);" +
+                      "background:rgba(255,255,255,0.12);color:var(--ink);font:11.5px var(--sans);";
+    b.onclick = () => { showErr(""); goOnline(me.room); };
+    $("err").appendChild(b);
+  }
 }
 
 function goOnline(room) {
@@ -668,7 +704,7 @@ function goOnline(room) {
   if (peer) { try { peer.destroy(); } catch (_) {} }
   guests.clear(); hostConn = null;
   // First claim on the room id becomes host; a taken id means the room exists.
-  peer = new Peer(peerIdFor(room), { debug: 0 });
+  peer = new Peer(peerIdFor(room), { debug: 0, config: RTC });
 
   peer.on("open", () => {
     me.isHost = true;
@@ -698,15 +734,25 @@ function goOnline(room) {
   });
 }
 
-function becomeGuest(room) {
+// A scanned link must JOIN, not claim. Claiming first meant that if the id
+// registration raced (or the host had just reloaded and freed it), the phone
+// became host of its own arena with bots and never met the real game.
+function joinRoom(room) {
+  me.room = room;
+  becomeGuest(room, true);
+}
+
+function becomeGuest(room, hostIfEmpty) {
   me.isHost = false;
+  clearTimeout(joinWatchdog);
   if (peer) { try { peer.destroy(); } catch (_) {} }
-  peer = new Peer({ debug: 0 });
+  peer = new Peer({ debug: 0, config: RTC });
   peer.on("open", () => {
     const conn = peer.connect(peerIdFor(room), { reliable: true });
     hostConn = conn;
     conn.on("open", () => {
       log("joined room " + room);
+      clearTimeout(joinWatchdog);
       showErr("");
       conn.send({ t: "hello", name: me.name, color: me.color, look: me.look });
     });
@@ -714,9 +760,23 @@ function becomeGuest(room) {
     conn.on("close", () => { showErr("Host left — the room is gone."); hostConn = null; });
   });
   peer.on("error", (e) => {
-    if (e.type === "peer-unavailable") showErr("No room called " + room + ".");
-    else showErr("Network: " + e.type);
+    if (e.type === "peer-unavailable") {
+      // nobody is hosting this code: open it ourselves
+      if (hostIfEmpty) { log("no host for " + room + " — hosting it"); goOnline(room); return; }
+      showErr("No room called " + room + ".");
+    } else showErr("Network: " + e.type);
   });
+
+  // Signaling succeeding but the peer link never opening is the NAT case, and
+  // it is silent by default. Name it, and offer the way out.
+  clearTimeout(joinWatchdog);
+  joinWatchdog = setTimeout(() => {
+    if (hostConn && hostConn.open) return;
+    showErr("Reached the signalling server but the peer link to room " + room +
+            " never opened — usually a firewall or mobile-network NAT. " +
+            "Try both devices on the same wifi.", true);
+  }, 9000);
+
   paintRoom();
 }
 
@@ -880,7 +940,7 @@ scene.add(arenaFloor);
 })();
 
 /* tile meshes are kept in a map and only touched when the grid changes */
-const tileGeo = new THREE.BoxGeometry(0.96, 1, 0.96);
+const tileGeo = new THREE.BoxGeometry(0.96, 0.9, 0.96);
 const tileMeshes = new Map();
 function syncTiles() {
   for (let r = 0; r < ROWS; r++) {
@@ -896,7 +956,7 @@ function syncTiles() {
       const m = wantBrick ? MATS.brick : (edge ? MATS.wall : MATS.solid);
       if (have) { have.material = m; continue; }
       const mesh = new THREE.Mesh(tileGeo, m);
-      mesh.position.set(mid(c), 1.1, mid(r));
+      mesh.position.set(mid(c), 1.05, mid(r));
       mesh.castShadow = true; mesh.receiveShadow = true;
       scene.add(mesh);
       tileMeshes.set(key, mesh);
@@ -918,46 +978,129 @@ function syncTiles() {
 }
 
 /* bombs + flames are pooled: created on demand, hidden when unused */
-const bombPool = [], flamePool = [];
+const bombPool = [], flamePool = [], markPool = [];
 function getFrom(pool, make) {
   for (const o of pool) if (!o.visible) { o.visible = true; return o; }
   const o = make(); pool.push(o); scene.add(o); return o;
 }
 
-const bombGeo = new THREE.SphereGeometry(0.34, 16, 12);
 const flameGeo = new THREE.BoxGeometry(0.92, 0.92, 0.92);
+const ringGeo = new THREE.RingGeometry(0.42, 0.5, 20);
+const markGeo = new THREE.PlaneGeometry(0.92, 0.92);
+
+/* A bomb is a group, not a bare sphere: body, collar, bent fuse and a spark
+   that flickers. The old version was a plain ball and read as a rock. */
+function makeBomb() {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.SphereGeometry(0.33, 20, 16),
+    new THREE.MeshPhongMaterial({ color: "#181c33", shininess: 70, specular: "#8fa0d8" })
+  );
+  body.position.y = 0.33;
+  body.castShadow = true;
+  const collar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.12, 0.15, 0.11, 12),
+    new THREE.MeshPhongMaterial({ color: "#3b4470", shininess: 40 })
+  );
+  collar.position.y = 0.62;
+  // fuse: a quarter torus reads as a bent cord for one geometry
+  const fuse = new THREE.Mesh(
+    new THREE.TorusGeometry(0.13, 0.025, 8, 12, Math.PI * 0.75),
+    new THREE.MeshLambertMaterial({ color: "#c9a227" })
+  );
+  fuse.position.set(0.02, 0.72, 0);
+  fuse.rotation.set(Math.PI / 2, 0, 0.6);
+  const spark = new THREE.Mesh(
+    new THREE.SphereGeometry(0.075, 10, 8),
+    new THREE.MeshBasicMaterial({ color: "#fff0b8" })
+  );
+  spark.position.set(0.2, 0.86, 0);
+  const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
+    color: "#ffb454", transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false
+  }));
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.03;
+  g.add(body, collar, fuse, spark, ring);
+  g.userData = { body, spark, ring };
+  return g;
+}
 
 function syncDynamics(t) {
   for (const o of bombPool) o.visible = false;
   for (const o of flamePool) o.visible = false;
+  for (const o of markPool) o.visible = false;
+
   for (const b of S.bombs) {
-    const m = getFrom(bombPool, () => {
-      const g = new THREE.Mesh(bombGeo, MATS.bomb);
-      g.castShadow = true;
-      return g;
-    });
-    const pulse = 1 + Math.sin((FUSE - b.timer) * 15) * 0.11;
-    m.position.set(mid(b.c), 0.95, mid(b.r));
-    m.scale.setScalar(pulse);
+    const g = getFrom(bombPool, makeBomb);
+    const fuseLeft = clamp(b.timer / FUSE, 0, 1);
+    const urgency = 1 - fuseLeft;
+    const pulse = 1 + Math.sin((FUSE - b.timer) * (9 + urgency * 22)) * (0.05 + urgency * 0.1);
+    g.position.set(mid(b.c), 0.6, mid(b.r));
+    g.userData.body.scale.setScalar(pulse);
+    // spark brightens and jitters as the fuse runs out
+    const s = 0.7 + Math.random() * 0.5 * (0.4 + urgency);
+    g.userData.spark.scale.setScalar(s);
+    g.userData.spark.material.color.setHSL(0.13 - 0.1 * urgency, 1, 0.72);
+    const ring = g.userData.ring;
+    ring.scale.setScalar(0.8 + urgency * 0.5);
+    ring.material.opacity = 0.35 + 0.5 * Math.abs(Math.sin((FUSE - b.timer) * 8));
+    ring.material.color.setHSL(0.1 - 0.1 * urgency, 1, 0.55);
   }
+
+  /* Blast telegraph: the tiles this bomb will burn light up as the fuse runs
+     down. Without it a high camera still leaves you guessing which way the
+     cross reaches, which is the whole game. */
+  for (const b of S.bombs) {
+    if (b.timer > 1.5) continue;
+    const heat = clamp(1 - b.timer / 1.5, 0, 1);
+    for (const cell of blastCells(b)) {
+      const m = getFrom(markPool, () => {
+        const q = new THREE.Mesh(markGeo, new THREE.MeshBasicMaterial({
+          color: "#ff7a45", transparent: true, opacity: 0.3, depthWrite: false
+        }));
+        q.rotation.x = -Math.PI / 2;
+        return q;
+      });
+      m.position.set(mid(cell.c), 0.62, mid(cell.r));
+      m.material.opacity = 0.1 + heat * 0.42;
+      m.material.color.setHSL(0.06 - 0.06 * heat, 1, 0.5 + 0.1 * heat);
+    }
+  }
+
   for (const f of S.flames) {
     const m = getFrom(flamePool, () => new THREE.Mesh(flameGeo, MATS.flame.clone()));
     const k = f.timer / FLAME_LIFE;
     m.position.set(mid(f.c), 1.0, mid(f.r));
-    m.scale.setScalar(0.55 + k * 0.6);
-    m.material.opacity = 0.35 + 0.6 * k;
+    m.scale.set(0.95, 0.55 + k * 0.75, 0.95);
+    m.material.opacity = 0.4 + 0.55 * k;
     m.material.color.setHSL(0.09 - 0.06 * (1 - k), 1, 0.55 + 0.2 * k);
   }
-  for (const [k, m] of tileMeshes) if (m.userData.spin) { m.rotation.y = t * 1.6; m.position.y = 0.95 + Math.sin(t * 3 + m.position.x) * 0.09; }
+
+  for (const [, m] of tileMeshes) {
+    if (m.userData.spin) { m.rotation.y = t * 1.6; m.position.y = 0.95 + Math.sin(t * 3 + m.position.x) * 0.09; }
+  }
 }
 
 /* ---- robots ---- */
+// hand-rolled because ctx.roundRect only exists in Safari 16.4+, and this runs
+// on whatever phone scans the QR
+function roundPath(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
 function labelSprite(text, color) {
   const cv = document.createElement("canvas");
   cv.width = 256; cv.height = 64;
   const g = cv.getContext("2d");
   g.fillStyle = "rgba(10,12,26,0.82)";
-  g.beginPath(); g.roundRect(4, 8, 248, 44, 12); g.fill();
+  roundPath(g, 4, 8, 248, 44, 12);
+  g.fill();
   g.strokeStyle = color; g.lineWidth = 3; g.stroke();
   g.fillStyle = "#fff";
   g.font = "600 26px ui-rounded, system-ui, sans-serif";
@@ -1071,11 +1214,13 @@ resize();
 
 function placeCamera(t, lobby) {
   const tight = innerWidth < 760;
-  const dist = lobby ? (tight ? 34 : 28) : (tight ? 25 : 19.5);
-  const height = lobby ? (tight ? 22 : 19) : (tight ? 20 : 16);
-  const ang = -Math.PI / 2 + (lobby ? 0.5 + Math.sin(t * 0.09) * 0.16 : Math.sin(t * 0.05) * 0.1);
-  camera.position.set(CX + Math.cos(ang) * dist * 0.35, height, CZ + dist);
-  camera.lookAt(CX, lobby ? 3.4 : 0.5, CZ + (lobby ? 2.2 : 0));
+  // in-arena wants a high three-quarter view: at a shallow angle the blocks
+  // hide the bombs behind them, which is the one thing you must always see
+  const dist = lobby ? (tight ? 34 : 28) : (tight ? 15.5 : 13.5);
+  const height = lobby ? (tight ? 22 : 19) : (tight ? 23 : 20.5);
+  const ang = -Math.PI / 2 + (lobby ? 0.5 + Math.sin(t * 0.09) * 0.16 : Math.sin(t * 0.04) * 0.05);
+  camera.position.set(CX + Math.cos(ang) * dist * 0.3, height, CZ + dist);
+  camera.lookAt(CX, lobby ? 3.4 : 0.9, CZ + (lobby ? 2.2 : 0));
 }
 
 /* ---------------------------------------------------------------- input -- */
@@ -1150,6 +1295,30 @@ function paintRoom() {
     : "Connected to room " + me.room;
 }
 
+function connState() {
+  const conns = hostConn ? [hostConn] : Array.from(guests.values()).map((g) => g.conn).filter(Boolean);
+  const ice = conns.map((c) => (c.peerConnection && c.peerConnection.iceConnectionState) || "?");
+  return {
+    signal: !peer ? "none" : peer.destroyed ? "destroyed"
+            : peer.disconnected ? "disconnected" : peer.open ? "open" : "connecting",
+    link: hostConn ? (hostConn.open ? "open" : "connecting")
+          : guests.size ? guests.size + " joined" : me.isHost ? "waiting" : "—",
+    ice: ice.length ? ice.join(",") : "—"
+  };
+}
+
+function paintDiag() {
+  const c = connState();
+  const local = /^(localhost|127\.|0\.0\.0\.0|\[::1\])/.test(location.hostname) || location.protocol === "file:";
+  $("diag").innerHTML =
+    `<div>role <b>${me.isHost ? "host" : "guest"}</b></div>` +
+    `<div>signal <b>${c.signal}</b></div>` +
+    `<div>link <b>${c.link}</b></div>` +
+    `<div>ice <b>${c.ice}</b></div>` +
+    (local ? `<span class="warn">⚠ This URL only works on this computer — a phone cannot reach it. Open the deployed page instead.</span>` : "") +
+    (netErr ? `<span class="warn">${netErr}</span>` : "");
+}
+
 function paintHud() {
   const p = myPlayer();
   const alive = S.players.filter((q) => q.alive).length;
@@ -1213,7 +1382,7 @@ $("name").addEventListener("input", () => { me.name = $("name").value.trim() || 
 $("enter").addEventListener("click", () => enterArena(me.room));
 $("joinbtn").addEventListener("click", () => {
   const v = $("code").value.trim().toUpperCase();
-  if (v.length >= 3) { me.room = v; becomeGuest(v); showArena(); }
+  if (v.length >= 3) { me.room = v; showArena(); joinRoom(v); }
 });
 $("copy").addEventListener("click", async () => {
   const url = location.origin + location.pathname + "?room=" + me.room;
@@ -1240,8 +1409,8 @@ function enterArena(room) {
 }
 
 /* ----------------------------------------------------------------- loop -- */
-let acc = 0, last = 0, netAcc = 0;
-function frame(ts) {
+let acc = 0, last = 0, netAcc = 0, frameFailed = false;
+function frameBody(ts) {
   const dt = Math.min(0.05, last ? (ts - last) / 1000 : 0.016);
   last = ts;
   const t = ts / 1000;
@@ -1278,6 +1447,19 @@ function frame(ts) {
   paintCenter();
   if (!$("board").hidden) paintBoard();
   renderer.render(scene, camera);
+}
+
+// A phone that throws mid-frame used to just go black, which is
+// indistinguishable from "cannot join". Say so instead.
+function frame(ts) {
+  try { frameBody(ts); }
+  catch (e) {
+    if (!frameFailed) {
+      frameFailed = true;
+      showErr("Render error: " + ((e && e.message) || e));
+      console.error("[sky-bombers] frame failed", e);
+    }
+  }
   requestAnimationFrame(frame);
 }
 
@@ -1294,12 +1476,13 @@ paintRoom();          // the lobby shows the room code before you enter
 buildLevel();
 seatRoster();
 syncTiles();
+setInterval(paintDiag, 500);
 requestAnimationFrame(frame);
 console.log("[sky-bombers] ready · three " + THREE.REVISION + " · room " + me.room +
   (roomFromUrl ? " (joining from link)" : ""));
 
 // A ?room= link means someone scanned the QR: join straight away.
-if (roomFromUrl) { showArena(); goOnline(me.room); }
+if (roomFromUrl) { showArena(); joinRoom(me.room); }
 
 /* Headless checks. #selftest runs bots against each other with no rendering
    dependency; #nettest is driven by the harness to prove two browsers really
